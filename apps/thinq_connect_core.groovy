@@ -505,6 +505,10 @@ def apiGet(endpoint) {
         }
         logger("debug", "apiGet(${endpoint}, ${result})")
         return result
+    } catch (groovyx.net.http.HttpResponseException e) {
+        def resp = e.response
+        logger("error", "API GET exception: (${resp.status}) ${resp.data}")
+        return null
     } catch (Exception e) {
         logger("error", "API GET exception: ${e}")
         return null
@@ -553,7 +557,15 @@ def getApiHeaders() {
 }
 
 def generateMessageId() {
-    return UUID.randomUUID().toString().replaceAll(/-/, "")[0..21]
+    byte[] uuidBytes = UUID.randomUUID()
+        .toString()
+        .replaceAll(/-/, "")
+        .decodeHex()
+    return uuidBytes.encodeBase64()
+        .toString()
+        .replace("+", "-")
+        .replace("/", "_")
+        .replace("=", "")
 }
 
 def findMasterDevice() {

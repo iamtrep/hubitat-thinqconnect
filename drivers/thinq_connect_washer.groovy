@@ -144,9 +144,14 @@ def mqttClientStatus(String message) {
 
 def processStateData(data) {
     logger("debug", "processStateData(${data})")
-    data = data[0]
-
     if (!data) return
+
+    // Normalize payload - API may return a Map or a List with one Map
+    if (data instanceof List) {
+        if (data.isEmpty()) return
+        data = data[0]
+    }
+    if (!(data instanceof Map)) return
 
     // Process current state
     if (data.runState?.currentState) {
