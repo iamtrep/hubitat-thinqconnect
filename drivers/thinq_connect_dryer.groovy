@@ -44,8 +44,6 @@ metadata {
         attribute "operationMode", "string"
         attribute "remoteControlEnabled", "string"
         attribute "cycleCount", "number"
-        attribute "dryLevel", "string"
-        attribute "temperatureLevel", "string"
         
         // Timer attributes
         attribute "relativeHourToStart", "number"
@@ -267,17 +265,6 @@ def processStateData(data) {
     // Process cycle count
     if (data.cycle?.cycleCount != null) {
         sendEvent(name: "cycleCount", value: data.cycle.cycleCount)
-    }
-
-    // Process dryer-specific attributes
-    if (data.dryLevel?.dryLevel) {
-        def dryLevelValue = cleanEnumValue(data.dryLevel.dryLevel)
-        sendEvent(name: "dryLevel", value: dryLevelValue)
-    }
-
-    if (data.temperature?.temperatureLevel) {
-        def tempLevel = cleanEnumValue(data.temperature.temperatureLevel)
-        sendEvent(name: "temperatureLevel", value: tempLevel)
     }
 
     // Process error state

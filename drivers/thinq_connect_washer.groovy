@@ -24,7 +24,6 @@ metadata {
         capability "Sensor"
         capability "Switch"
         capability "Initialize"
-        capability "ContactSensor"
         capability "Refresh"
         capability "EnergyMeter"
 
