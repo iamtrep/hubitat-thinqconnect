@@ -96,7 +96,6 @@ def initialize() {
 
 def refresh() {
     logger("debug", "refresh()")
-    // parent.getDeviceStatus(getDeviceDetails(), device)
     def status = parent.getDeviceState(getDeviceId())
 	processStateData(status)
 }
@@ -354,11 +353,6 @@ def setDelayStart(hours) {
 
 def getDeviceId() {
     return device.deviceNetworkId.replace("thinqconnect:", "")
-}
-
-def getDeviceDetails() {
-    def deviceId = getDeviceId()
-    return parent.state.foundDevices.find { it.id == deviceId }
 }
 
 // Powered on but idle, paused, finished or in error: not running.
