@@ -8,6 +8,7 @@
 
 import groovy.transform.Field
 import groovy.json.JsonSlurper
+import java.math.RoundingMode
 
 @Field List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field String DEFAULT_LOG_LEVEL = LOG_LEVELS[2]
@@ -22,7 +23,12 @@ metadata {
         capability "Switch"
         capability "Initialize"
         capability "Refresh"
+        capability "EnergyMeter"
 
+        attribute "energyToday", "number"
+        attribute "energyYesterday", "number"
+        attribute "energyThisMonth", "number"
+        attribute "energyLastMonth", "number"
         attribute "runTime", "number"
         attribute "runTimeDisplay", "string"
         attribute "remainingTime", "number"
@@ -45,6 +51,7 @@ metadata {
         attribute "relativeMinuteToStop", "number"
         
         // Commands
+        command "refreshEnergy"
         command "start"
         command "toggle"
         command "powerOff"
@@ -54,6 +61,7 @@ metadata {
     preferences {
         section {
             input name: "logLevel", title: "Log Level", type: "enum", options: LOG_LEVELS, defaultValue: DEFAULT_LOG_LEVEL, required: false
+            input name: "energyRefreshMinutes", type: "enum", title: "Energy usage refresh", description: "How often to read energy usage from LG (LG updates it once a day)", options: ["0": "Disabled", "60": "Every hour", "180": "Every 3 hours", "720": "Every 12 hours"], defaultValue: "180", required: false
             input name: "logDescText", title: "Log Description Text", type: "bool", defaultValue: false, required: false
             input name: "switchControlsDryer", title: "Switch on/off starts and stops the dryer",
                   description: "Off: the switch only reports whether a cycle is running, so an 'all off' rule or a voice assistant can't stop the dryer. The Start and Toggle commands work either way.",
@@ -88,6 +96,7 @@ def initialize() {
     }
     
     refresh()
+    scheduleEnergyRefresh()
 }
 
 // A code push doesn't run updated(). The first status or MQTT message after one does.
@@ -340,6 +349,72 @@ boolean isRunningState(state) {
 int storedTimer(String key) {
     def v = getDataValue(key)
     return v?.isInteger() ? v.toInteger() : 0
+}
+
+// ---- Energy usage (LG's /devices/energy endpoints, as in the air conditioner driver) ----
+// LG aggregates usage once a day (Home Assistant: "updated each morning"), so a few reads a
+// day are enough; the minute is picked once per install so hubs don't all call at once.
+private void scheduleEnergyRefresh() {
+    unschedule("refreshEnergy")
+    Integer minutes = (energyRefreshMinutes ?: "180") as Integer
+    if (minutes <= 0) return
+    if (state.energyMinute == null) state.energyMinute = new Random().nextInt(60)
+    int hours = Math.max(minutes.intdiv(60), 1)
+    schedule("${new Random().nextInt(60)} ${state.energyMinute} */${hours} ? * *", "refreshEnergy")
+    runIn(10, "refreshEnergy")
+}
+
+def refreshEnergy() {
+    logger("debug", "refreshEnergy()")
+    def deviceId = getDeviceId()
+    if (!state.energyProperty) {
+        def profile = parent.getEnergyProfile(deviceId)
+        if (profile == null) {
+            // The call failed (the app logs LG's reason, e.g. 1309 when the token may not read
+            // energy): keep the schedule, it may work once the token allows it.
+            logger("warn", "Couldn't read the energy profile from LG; see the ThinQ app's log for the reason")
+            return
+        }
+        def properties = (profile?.result ?: profile)?.property
+        if (properties) state.energyProperty = properties[0].toString()
+    }
+    if (!state.energyProperty) {
+        logger("info", "Energy usage is not available for this appliance")
+        unschedule("refreshEnergy")
+        return
+    }
+
+    TimeZone tz = location.timeZone
+    Date now = new Date()
+    Calendar lastMonthCal = Calendar.getInstance(tz)
+    lastMonthCal.setTime(now)
+    lastMonthCal.add(Calendar.MONTH, -1)
+
+    String today = now.format("yyyyMMdd", tz)
+    String yesterday = (now - 1).format("yyyyMMdd", tz)
+    String thisMonth = now.format("yyyyMM", tz)
+    String lastMonth = lastMonthCal.getTime().format("yyyyMM", tz)
+
+    Map daily = energyUsageByDate(deviceId, "DAILY", yesterday, today)
+    Map monthly = energyUsageByDate(deviceId, "MONTHLY", lastMonth, thisMonth)
+
+    sendEnergyEvent("energyToday", daily[today])
+    sendEnergyEvent("energyYesterday", daily[yesterday])
+    sendEnergyEvent("energyThisMonth", monthly[thisMonth])
+    sendEnergyEvent("energyLastMonth", monthly[lastMonth])
+    sendEnergyEvent("energy", monthly[thisMonth])
+}
+
+private Map energyUsageByDate(deviceId, String period, String startDate, String endDate) {
+    def response = parent.getEnergyUsage(deviceId, state.energyProperty, period, startDate, endDate)
+    def dataList = (response?.result ?: response)?.dataList ?: []
+    return dataList.collectEntries { [(it.usedDate?.toString()): it[state.energyProperty]] }
+}
+
+private void sendEnergyEvent(String name, wh) {
+    if (wh == null) return
+    BigDecimal kwh = (wh as BigDecimal).divide(1000G, 3, RoundingMode.HALF_UP)
+    sendEvent(name: name, value: kwh, unit: "kWh")
 }
 
 // The old version stripped everything up to the last underscore, so NORMAL_WASH became "Wash"
