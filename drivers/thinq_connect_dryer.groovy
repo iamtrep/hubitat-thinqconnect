@@ -36,12 +36,11 @@ metadata {
         attribute "totalTimeDisplay", "string"
         attribute "finishTimeDisplay", "string"
         attribute "currentState", "string"
+        attribute "notification", "string"
         attribute "error", "string"
         attribute "operationMode", "string"
         attribute "remoteControlEnabled", "string"
         attribute "cycleCount", "number"
-        attribute "dryLevel", "string"
-        attribute "temperatureLevel", "string"
         
         // Timer attributes
         attribute "relativeHourToStart", "number"
@@ -168,6 +167,14 @@ def mqttClientStatus(String message) {
     }
 }
 
+// LG's own notifications (pushCode from /push), e.g. washing_is_complete. Every one is an event,
+// even when it repeats the last one, so a rule fires for each load.
+void processNotification(String code) {
+    String value = code.toLowerCase()
+    sendEvent(name: "notification", value: value, isStateChange: true, descriptionText: "${device.displayName} LG notification: ${value}")
+    if (logDescText) log.info "${device.displayName} LG notification: ${value}"
+}
+
 def processStateData(data) {
     logger("debug", "processStateData(${data})")
     // REST answers a map for the dryer; MQTT reports may come as a list. A failed REST call
@@ -245,17 +252,6 @@ def processStateData(data) {
     // Process cycle count
     if (data.cycle?.cycleCount != null) {
         sendEvent(name: "cycleCount", value: data.cycle.cycleCount)
-    }
-
-    // Process dryer-specific attributes
-    if (data.dryLevel?.dryLevel) {
-        def dryLevelValue = cleanEnumValue(data.dryLevel.dryLevel)
-        sendEvent(name: "dryLevel", value: dryLevelValue)
-    }
-
-    if (data.temperature?.temperatureLevel) {
-        def tempLevel = cleanEnumValue(data.temperature.temperatureLevel)
-        sendEvent(name: "temperatureLevel", value: tempLevel)
     }
 
     // Process error state
