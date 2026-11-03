@@ -236,8 +236,7 @@ def processStateData(data) {
 
         logger("debug", "remainingTime: ${remainingTime}")
 
-        Date finishTime = new Date(now() + remainingTime * 1000L)
-        sendEvent(name: "finishTimeDisplay", value: finishTime.format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone))
+        updateFinishTime("finishTimeDisplay", remainingTime)
     }
 
     // Process delay timer
@@ -474,4 +473,19 @@ private logger(level, msg) {
             log."${level}" "${device.displayName} ${msg}"
         }
     }
+}
+
+// finishTime = now + remaining, so every message moves it by a few seconds and each refresh of an
+// idle appliance (remaining 0) logged a new "now". Send it only while time remains, and only when
+// it moves by more than 90 s; at 0 it keeps the time the last cycle was due to end.
+private void updateFinishTime(String attr, int remainingTime) {
+    if (remainingTime <= 0) return
+    long finish = now() + remainingTime * 1000L
+    String current = device.currentValue(attr)
+    if (current) {
+        try {
+            if (Math.abs(finish - Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", current).time) < 90000L) return
+        } catch (Exception ignored) { }   // an unparseable old value is replaced
+    }
+    sendEvent(name: attr, value: new Date(finish).format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone))
 }
