@@ -29,6 +29,7 @@ definition(
     namespace: "jonozzz",
     author: "Ionut Turturica",
     description: "Integrate LG ThinQ smart devices with Hubitat using official ThinQ Connect API.",
+    menu: "Integrations",
     category: "My Apps",
     importUrl: "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/apps/thinq_connect_core.groovy",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
