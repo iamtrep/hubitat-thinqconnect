@@ -16,6 +16,7 @@ import java.security.MessageDigest
 import java.security.KeyPairGenerator
 import java.security.KeyPair
 import java.security.Signature
+import java.util.concurrent.ConcurrentHashMap
 
 @Field List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field String DEFAULT_LOG_LEVEL = LOG_LEVELS[2]
@@ -99,6 +100,9 @@ preferences {
 
 @Field static def caCertUrl = "https://www.amazontrust.com/repository/AmazonRootCA1.pem"
 @Field static final String PAT_URL = "https://connect-pat.lgthinq.com"
+// Decrypted secrets, in memory only: decrypt() costs 350-830 ms. Key "<app id>:<name>",
+// value [ciphertext, plaintext] so a replaced secret misses.
+@Field static final ConcurrentHashMap<String, List<String>> SECRET_CACHE = new ConcurrentHashMap<>()
 
 // LG ThinQ Connect error codes worth explaining (from LG's thinqconnect SDK, ThinQAPIErrorCodes)
 @Field static final Map LG_ERRORS = [
@@ -143,9 +147,13 @@ def prefMain() {
 }
 
 def prefAuth() {
+    captureSecrets()
     return dynamicPage(name: "prefAuth", title: "Authentication Setup", nextPage: "prefMqtt", uninstall: false, install: false) {
         section("ThinQ Connect API") {
-            input "patToken", "text", title: "PAT Token", description: "Enter your Personal Access Token from LG ThinQ Connect", required: true
+            String stored = maskToken(patValue())
+            input "patToken", "password",
+                title: stored ? "Personal access token (stored ${stored}, enter only to change it)" : "Personal access token",
+                description: "From LG's token page", required: false
             input "countryCode", "enum", title: "Country", options: getCountryOptions(), required: true, submitOnChange: true
             
             if (countryCode) {
@@ -157,7 +165,7 @@ def prefAuth() {
         }
         
         section("Test Connection") {
-            if (patToken && countryCode) {
+            if (patValue() && countryCode) {
                 def testResult = testApiConnection()
                 if (testResult.success) {
                     paragraph "✅ Connection successful! Found ${testResult.deviceCount} devices."
@@ -185,9 +193,10 @@ def getCountryOptions() {
 }
 
 def prefMqtt() {
+    captureSecrets()
     return dynamicPage(name: "prefMqtt", title: "MQTT Configuration", nextPage: "prefMQTTClient", uninstall: false, install: false) {
         section("MQTT Server") {
-            if (patToken && countryCode) {
+            if (patValue() && countryCode) {
                 def routeResult = getMqttServerFromApi()
                 if (routeResult.success) {
                     paragraph "✅ MQTT Server: ${routeResult.mqttServer}"
@@ -201,12 +210,13 @@ def prefMqtt() {
         }
         
         section("Certificate") {
-            if (!csrData && !privateKey) {
-                if (!state.generatedCsr || !state.generatedKey) {
+            if (!csrData) {
+                if (!state.generatedCsr || !state.mqttKeyEnc || state.customKey) {
                     try {
                         Map c = generateMqttCredentials()
                         state.generatedCsr = c.csr
-                        state.generatedKey = c.privateKey
+                        storeSecret("mqttKey", "mqttKeyEnc", c.privateKey)
+                        state.customKey = false
                     } catch (Exception e) {
                         logger("error", "Key generation failed: ${e}")
                     }
@@ -214,28 +224,34 @@ def prefMqtt() {
                 paragraph state.generatedCsr ?
                     "✅ The hub created a private key and certificate request for LG's push service. Click Next to register them with LG." :
                     "❌ The hub couldn't create a key; paste your own below."
+            } else if (state.customKey) {
+                paragraph "Using the certificate request below and the private key pasted with it (stored encrypted)."
             } else {
-                paragraph "Using the certificate request and private key pasted below."
+                paragraph "❌ A pasted certificate request needs its private key: paste it below."
             }
         }
-        section("Advanced: use your own key", hideable: true, hidden: !(csrData || privateKey)) {
-            paragraph "Leave both empty to use the key the hub created. To use your own, make them with openssl (see the README) and paste both."
+        section("Advanced: use your own key", hideable: true, hidden: !csrData) {
+            paragraph "Leave the request empty to use the key the hub created. To use your own, make both with openssl (see the README) and paste them. The key is stored encrypted and its field is cleared."
             input "csrData", "textarea", title: "CSR (Certificate Signing Request, PEM)", required: false
-            input "privateKey", "textarea", title: "Private Key (PEM)", required: false
+            input "privateKey", "textarea", title: state.customKey ? "Private Key (stored, paste only to replace it)" : "Private Key (PEM)", required: false
         }
     }
 }
 
-// The pasted pair wins; otherwise the pair the hub generated on the MQTT page.
+// The pasted request wins; otherwise the one the hub generated on the MQTT page. The private
+// key that goes with either is in state.mqttKeyEnc.
 String effectiveCsr() { return csrData ?: state.generatedCsr }
-String effectiveKey() { return privateKey ?: state.generatedKey }
+String effectiveKey() { return secretValue("mqttKey", "mqttKeyEnc") }
 
 def prefMQTTClient() {
-    def pk_sig = calculateMD5((effectiveCsr() ?: "") + (effectiveKey() ?: ""))
+    captureSecrets()
+    // A new key always comes with a new request (it holds the public key), so the request alone
+    // tells whether the certificate must be issued again; no hash of the private key is kept.
+    def pk_sig = calculateMD5(effectiveCsr() ?: "")
     return dynamicPage(name: "prefMQTTClient", title: "MQTT Client Registration", nextPage: "prefDevices", uninstall: false, install: false) {
         section {
             if(!state.clientCertificate || !state.mqttSubscriptions || state.pk_sig != pk_sig)
-                if (patToken && countryCode && state.mqttServer && effectiveCsr()) {
+                if (patValue() && countryCode && state.mqttServer && effectiveCsr() && effectiveKey()) {
                     def mqttResult = setupMqttClient()
                     if (mqttResult.success) {
                         paragraph "✅ MQTT client registered and certificate issued successfully"
@@ -257,7 +273,8 @@ def prefMQTTClient() {
 }
 
 def prefDevices() {
-    if (!patToken || !countryCode) {
+    captureSecrets()
+    if (!patValue() || !countryCode) {
         return returnErrorPage("Please complete authentication setup first", "prefAuth")
     }
     
@@ -306,17 +323,21 @@ def returnErrorPage(message, nextPage) {
 
 def installed() {
     logger("debug", "installed()")
+    captureSecrets()
     initialize()
 }
 
 def updated() {
     logger("debug", "updated()")
+    captureSecrets()
     unschedule()
     initialize()
 }
 
 def uninstalled() {
     logger("debug", "uninstalled()")
+    String prefix = "${app.id}:"
+    SECRET_CACHE.keySet().removeIf { String k -> k.startsWith(prefix) }
     unschedule()
     for (d in getChildDevices()) {
         deleteChildDevice(d.deviceNetworkId)
@@ -607,7 +628,7 @@ String describeApiError(Map err) {
 
 def getApiHeaders() {
     return [
-        "Authorization": "Bearer ${patToken}",
+        "Authorization": "Bearer ${patValue()}",
         "x-country": countryCode,
         "x-message-id": generateMessageId(),
         "x-client-id": state.client_id,
@@ -688,6 +709,58 @@ def processMqttMessage(dev, payload) {
 def sendDeviceCommand(deviceId, command) {
     logger("debug", "sendDeviceCommand(${deviceId}, ${command})")
     return apiPost("/devices/${deviceId}/control", command)
+}
+
+// ---- Secrets ----------------------------------------------------------------------------
+// The token and the MQTT private key are stored only with encrypt() in state; a typed or pasted
+// value is moved there and its setting removed on the next page, save or upgrade. Values from
+// earlier versions (plain settings, a plain generated key in state) migrate the same way.
+
+void captureSecrets() {
+    if (settings.patToken) {
+        storeSecret("pat", "patEnc", settings.patToken.toString().trim())
+        app.removeSetting("patToken")
+    }
+    if (settings.privateKey) {
+        storeSecret("mqttKey", "mqttKeyEnc", settings.privateKey.toString())
+        state.customKey = true
+        app.removeSetting("privateKey")
+    }
+    if (state.generatedKey) {
+        storeSecret("mqttKey", "mqttKeyEnc", state.generatedKey.toString())
+        state.remove("generatedKey")
+    }
+}
+
+void storeSecret(String name, String stateKey, String plain) {
+    String enc = encrypt(plain)
+    state[stateKey] = enc
+    SECRET_CACHE.put("${app.id}:${name}".toString(), [enc, plain])
+}
+
+String secretValue(String name, String stateKey) {
+    String enc = state[stateKey] as String
+    String key = "${app.id}:${name}".toString()
+    if (!enc) { SECRET_CACHE.remove(key); return null }
+    List<String> hit = SECRET_CACHE.get(key)
+    if (hit != null && hit[0] == enc) return hit[1]
+    try {
+        String plain = decrypt(enc)
+        SECRET_CACHE.put(key, [enc, plain])
+        return plain
+    } catch (Exception e) {
+        SECRET_CACHE.remove(key)
+        logger("warn", "Could not decrypt the stored ${name == 'pat' ? 'token' : 'MQTT key'} (${e.message}); enter it again")
+        return null
+    }
+}
+
+String patValue() { return secretValue("pat", "patEnc") }
+
+// Bullets and the last 4 characters, enough to match it against LG's token list.
+String maskToken(String t) {
+    if (!t) return null
+    return "••••" + (t.length() > 4 ? t.substring(t.length() - 4) : "")
 }
 
 // ---- MQTT client credentials, made on the hub ----------------------------------------
