@@ -13,6 +13,9 @@ import groovy.transform.Field
 import java.text.SimpleDateFormat
 import groovy.json.JsonSlurper
 import java.security.MessageDigest
+import java.security.KeyPairGenerator
+import java.security.KeyPair
+import java.security.Signature
 
 @Field List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field String DEFAULT_LOG_LEVEL = LOG_LEVELS[2]
@@ -95,6 +98,19 @@ preferences {
 ]
 
 @Field static def caCertUrl = "https://www.amazontrust.com/repository/AmazonRootCA1.pem"
+@Field static final String PAT_URL = "https://connect-pat.lgthinq.com"
+
+// LG ThinQ Connect error codes worth explaining (from LG's thinqconnect SDK, ThinQAPIErrorCodes)
+@Field static final Map LG_ERRORS = [
+    "1222": "The appliance isn't connected to LG's cloud. Check that it shows online in the LG ThinQ app (Wi-Fi icon lit); DNS filters such as Pi-hole lists can block lgthinq.com names.",
+    "1218": "The token is invalid. Create a new one on the LG token page.",
+    "1302": "The token wasn't found. Create a new one on the LG token page.",
+    "1304": "LG's terms aren't accepted for this account. Open the LG token page, sign in and accept them.",
+    "1306": "Too many API calls. LG blocks the token for a while; try again later.",
+    "1307": "This country isn't supported for the token. Pick the country of your LG account.",
+    "1308": "The token lacks control permission for this action.",
+    "1309": "Too many API calls. Try again later."
+]
 
 def prefMain() {
     if (state.client_id == null)
@@ -114,11 +130,14 @@ def prefMain() {
     return dynamicPage(name: "prefMain", title: "ThinQ Connect Setup", nextPage: "prefAuth", uninstall: false, install: false) {
         section {
             input "logLevel", "enum", title: "Log Level", options: LOG_LEVELS, defaultValue: DEFAULT_LOG_LEVEL, required: false
-            paragraph "This integration uses the official LG ThinQ Connect API with PAT (Personal Access Token) authentication."
-            paragraph "You will need:"
-            paragraph "1. A PAT token from LG ThinQ Connect portal"
-            paragraph "2. MQTT certificates (can be hardcoded or generated once)"
-            paragraph "3. Your country/region selection"
+            paragraph "This integration uses LG's official ThinQ Connect API. Setup takes three steps:"
+            paragraph "<b>1. Create a personal access token</b> on LG's token page, signed in with the LG account your appliances are in (the one in the LG ThinQ app). " +
+                      "Under ADD NEW TOKEN, give it a name and tick the scopes: <i>Permission to view all devices</i> and <i>Permission to view all device statuses</i>. " +
+                      "Add <i>All device control rights</i> only if you want to start or stop appliances from Hubitat. Copy the token: LG shows it once."
+            href name: "patLink", title: "Open LG's token page", description: PAT_URL, style: "external", url: PAT_URL
+            paragraph "<b>2. Paste the token and pick your country</b> on the next page; it tests the connection."
+            paragraph "<b>3. Live updates:</b> the hub creates the key and certificate request it needs for LG's push service. Nothing to install on a computer."
+            paragraph "Appliances must be online in the LG ThinQ app (Wi-Fi icon lit) for Hubitat to read them."
         }
     }
 }
@@ -144,6 +163,7 @@ def prefAuth() {
                     paragraph "✅ Connection successful! Found ${testResult.deviceCount} devices."
                 } else {
                     paragraph "❌ Connection failed: ${testResult.error}"
+                    href name: "patLinkRetry", title: "Open LG's token page", description: PAT_URL, style: "external", url: PAT_URL
                 }
             } else {
                 paragraph "Enter PAT token and country to test connection"
@@ -180,21 +200,42 @@ def prefMqtt() {
             }
         }
         
-        section("Certificate Generation") {
-            paragraph "The integration will automatically issue a certificate using LG's API. You only need to provide a CSR (Certificate Signing Request)."
-            input "csrData", "textarea", title: "CSR (Certificate Signing Request)", required: true,
-                description: "Paste your CSR in PEM format"
-            input "privateKey", "textarea", title: "Private Key (PEM format)", required: true
+        section("Certificate") {
+            if (!csrData && !privateKey) {
+                if (!state.generatedCsr || !state.generatedKey) {
+                    try {
+                        Map c = generateMqttCredentials()
+                        state.generatedCsr = c.csr
+                        state.generatedKey = c.privateKey
+                    } catch (Exception e) {
+                        logger("error", "Key generation failed: ${e}")
+                    }
+                }
+                paragraph state.generatedCsr ?
+                    "✅ The hub created a private key and certificate request for LG's push service. Click Next to register them with LG." :
+                    "❌ The hub couldn't create a key; paste your own below."
+            } else {
+                paragraph "Using the certificate request and private key pasted below."
+            }
+        }
+        section("Advanced: use your own key", hideable: true, hidden: !(csrData || privateKey)) {
+            paragraph "Leave both empty to use the key the hub created. To use your own, make them with openssl (see the README) and paste both."
+            input "csrData", "textarea", title: "CSR (Certificate Signing Request, PEM)", required: false
+            input "privateKey", "textarea", title: "Private Key (PEM)", required: false
         }
     }
 }
 
+// The pasted pair wins; otherwise the pair the hub generated on the MQTT page.
+String effectiveCsr() { return csrData ?: state.generatedCsr }
+String effectiveKey() { return privateKey ?: state.generatedKey }
+
 def prefMQTTClient() {
-    def pk_sig = calculateMD5(csrData + privateKey)
+    def pk_sig = calculateMD5((effectiveCsr() ?: "") + (effectiveKey() ?: ""))
     return dynamicPage(name: "prefMQTTClient", title: "MQTT Client Registration", nextPage: "prefDevices", uninstall: false, install: false) {
         section {
             if(!state.clientCertificate || !state.mqttSubscriptions || state.pk_sig != pk_sig)
-                if (patToken && countryCode && state.mqttServer && csrData) {
+                if (patToken && countryCode && state.mqttServer && effectiveCsr()) {
                     def mqttResult = setupMqttClient()
                     if (mqttResult.success) {
                         paragraph "✅ MQTT client registered and certificate issued successfully"
@@ -204,7 +245,7 @@ def prefMQTTClient() {
                         state.pk_sig = pk_sig
                     } else {
                         // paragraph "Try again in 1-2 minutes"
-                        paragraph "❌ MQTT setup failed: ${mqttResult.error}"
+                        paragraph "❌ MQTT setup failed: ${mqttResult.error}. LG limits how often it issues certificates: wait a minute, then go Back and Next to retry."
                     }
                 } else {
                     paragraph "Complete all fields above to set up MQTT"
@@ -353,7 +394,7 @@ def testApiConnection() {
         if (devices != null) {
             return [success: true, deviceCount: devices.size()]
         } else {
-            return [success: false, error: "No response from API"]
+            return [success: false, error: describeApiError(state.lastApiError) ?: "No response from API"]
         }
     } catch (Exception e) {
         logger("error", "API connection test failed: ${e}")
@@ -396,10 +437,11 @@ def setupMqttClient() {
         logger("debug", "Client registration result: ${clientResult}")
         
         // Ensure csrData has proper PEM headers
-        def formattedCsrData = csrData
-        if (csrData && !csrData.contains("-----BEGIN CERTIFICATE REQUEST-----")) {
+        def csr = effectiveCsr()
+        def formattedCsrData = csr
+        if (csr && !csr.contains("-----BEGIN CERTIFICATE REQUEST-----")) {
             // Remove any existing whitespace/newlines
-            def csrContent = csrData.trim()
+            def csrContent = csr.trim()
             // Add PEM headers
             formattedCsrData = "-----BEGIN CERTIFICATE REQUEST-----\n" + csrContent + "\n-----END CERTIFICATE REQUEST-----"
         }
@@ -425,7 +467,7 @@ def setupMqttClient() {
                 return [success: false, error: "Missing certificate or subscriptions in response"]
             }
         } else {
-            return [success: false, error: "Failed to issue certificate"]
+            return [success: false, error: describeApiError(state.lastApiError) ?: "Failed to issue certificate"]
         }
     } catch (Exception e) {
         logger("error", "MQTT setup failed: ${e}")
@@ -504,9 +546,10 @@ def apiGet(endpoint) {
             }
         }
         logger("debug", "apiGet(${endpoint}, ${result})")
+        state.remove("lastApiError")
         return result
     } catch (Exception e) {
-        logger("error", "API GET exception: ${e}")
+        recordApiError("GET ${endpoint}", e)
         return null
     }
 }
@@ -534,11 +577,32 @@ def apiPost(endpoint, body) {
             }
         }
         return result
-    } catch (groovyx.net.http.HttpResponseException e) {
-        def resp = e.response
-        logger("error", "API POST exception: (${resp.status}) ${resp.data}")
+    } catch (Exception e) {
+        recordApiError("POST ${endpoint}", e)
         return null
     }
+}
+
+// LG puts its reason in the body ({"error": {"code": "1222", "message": "..."}}) whatever the
+// HTTP status, so keep it: the status alone (416, 400) doesn't say what went wrong.
+void recordApiError(String what, Exception e) {
+    def status = null
+    def body = null
+    try {
+        status = e.response?.status
+        body = e.response?.data
+    } catch (ignored) { }
+    def err = (body instanceof Map) ? body.error : null
+    state.lastApiError = [status: status, code: err?.code?.toString(), message: err?.message?.toString(), text: e.message]
+    logger("warn", "API ${what} failed: ${describeApiError(state.lastApiError)}")
+}
+
+String describeApiError(Map err) {
+    if (!err) return null
+    String s = err.code ? "LG error ${err.code}${err.message ? ': ' + err.message : ''}" : (err.text ?: "HTTP ${err.status}")
+    if (err.status && err.code) s += " (HTTP ${err.status})"
+    String hint = err.code ? LG_ERRORS[err.code] : null
+    return hint ? "${s}. ${hint}" : s
 }
 
 def getApiHeaders() {
@@ -587,10 +651,11 @@ def retrieveMqttDetails() {
     logger("debug", "retrieveMqttDetails()")
     
     // Ensure privateKey has proper PEM headers
-    def formattedPrivateKey = privateKey
-    if (privateKey && !privateKey.contains("-----BEGIN PRIVATE KEY-----")) {
+    def key = effectiveKey()
+    def formattedPrivateKey = key
+    if (key && !key.contains("-----BEGIN PRIVATE KEY-----")) {
         // Remove any existing whitespace/newlines
-        def keyContent = privateKey.trim()
+        def keyContent = key.trim()
         // Add PEM headers
         formattedPrivateKey = "-----BEGIN PRIVATE KEY-----\n" + keyContent + "\n-----END PRIVATE KEY-----"
     }
@@ -623,6 +688,90 @@ def processMqttMessage(dev, payload) {
 def sendDeviceCommand(deviceId, command) {
     logger("debug", "sendDeviceCommand(${deviceId}, ${command})")
     return apiPost("/devices/${deviceId}/control", command)
+}
+
+// ---- MQTT client credentials, made on the hub ----------------------------------------
+// A 2048-bit RSA key and a PKCS#10 certificate request signed with SHA256withRSA, with the
+// subject from csrconfig.txt: what the README's openssl recipe makes. The request is
+// DER-encoded by hand, since the JDK has no public CSR builder.
+
+Map generateMqttCredentials() {
+    KeyPairGenerator g = KeyPairGenerator.getInstance("RSA")
+    g.initialize(2048)
+    KeyPair kp = g.generateKeyPair()
+
+    // Subject as in the repo's csrconfig.txt
+    List<byte[]> rdns = [
+        derRdn("2.5.4.3", "AWS IoT Certificate", 0x0C),  // CN, UTF8String
+        derRdn("2.5.4.6", "US", 0x13),                   // C, PrintableString
+        derRdn("2.5.4.8", "State", 0x0C),                // ST
+        derRdn("2.5.4.7", "Locality", 0x0C),             // L
+        derRdn("2.5.4.10", "Amazon", 0x0C)               // O
+    ]
+    byte[] info = derSeq([
+        derTlv(0x02, [0] as byte[]),                     // version 0
+        derSeq(rdns),                                    // subject
+        kp.getPublic().getEncoded(),                     // SubjectPublicKeyInfo (X.509)
+        derTlv(0xA0, new byte[0])                        // attributes [0], empty
+    ])
+    Signature s = Signature.getInstance("SHA256withRSA")
+    s.initSign(kp.getPrivate())
+    s.update(info)
+    byte[] sig = s.sign()
+    byte[] algId = derSeq([derOid("1.2.840.113549.1.1.11"), derTlv(0x05, new byte[0])])
+    byte[] sigBits = new byte[sig.length + 1]
+    for (int i = 0; i < sig.length; i++) sigBits[i + 1] = sig[i]  // leading 0: no unused bits
+    byte[] csr = derSeq([info, algId, derTlv(0x03, sigBits)])
+
+    return [csr: toPem("CERTIFICATE REQUEST", csr),
+            privateKey: toPem("PRIVATE KEY", kp.getPrivate().getEncoded())]  // PKCS#8
+}
+
+String toPem(String label, byte[] der) {
+    String b64 = der.encodeBase64().toString()
+    StringBuilder sb = new StringBuilder("-----BEGIN ${label}-----\n")
+    for (int i = 0; i < b64.length(); i += 64) sb.append(b64.substring(i, Math.min(i + 64, b64.length()))).append("\n")
+    sb.append("-----END ${label}-----")
+    return sb.toString()
+}
+
+byte[] derRdn(String oid, String value, int stringTag) {
+    return derTlv(0x31, derSeq([derOid(oid), derTlv(stringTag, value.getBytes("UTF-8"))]))
+}
+
+byte[] derSeq(List<byte[]> parts) {
+    ByteArrayOutputStream out = new ByteArrayOutputStream()
+    parts.each { out.write(it, 0, it.length) }
+    return derTlv(0x30, out.toByteArray())
+}
+
+byte[] derOid(String dotted) {
+    List<Integer> arcs = dotted.tokenize(".").collect { it as Integer }
+    ByteArrayOutputStream out = new ByteArrayOutputStream()
+    out.write(arcs[0] * 40 + arcs[1])
+    arcs.drop(2).each { int v ->
+        List<Integer> b = [v & 0x7F]
+        v = v >> 7
+        while (v > 0) { b.add(0, (v & 0x7F) | 0x80); v = v >> 7 }
+        b.each { out.write(it) }
+    }
+    return derTlv(0x06, out.toByteArray())
+}
+
+byte[] derTlv(int tag, byte[] value) {
+    ByteArrayOutputStream out = new ByteArrayOutputStream()
+    out.write(tag)
+    int n = value.length
+    if (n < 0x80) {
+        out.write(n)
+    } else {
+        List<Integer> len = []
+        while (n > 0) { len.add(0, n & 0xFF); n = n >> 8 }
+        out.write(0x80 | len.size())
+        len.each { out.write(it) }
+    }
+    out.write(value, 0, value.length)
+    return out.toByteArray()
 }
 
 /**
