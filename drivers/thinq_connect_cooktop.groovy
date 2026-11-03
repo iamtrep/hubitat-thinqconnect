@@ -11,6 +11,9 @@ import groovy.json.JsonSlurper
 
 @Field List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field String DEFAULT_LOG_LEVEL = LOG_LEVELS[2]
+// Bump with any change that needs initialize() to run again (new schedules, MQTT handling):
+// a code push alone doesn't run updated(), so checkVersion() does it.
+@Field static final String CODE_VERSION = "1.2.5"
 @Field List<String> COOKTOP_LOCATIONS = [
     "CENTER",
     "CENTER_FRONT",
@@ -83,6 +86,7 @@ def uninstalled() {
 
 def initialize() {
     logger("debug", "initialize()")
+    state.version = CODE_VERSION
 
     // If a fixed location is configured, use it; otherwise keep last detected location
     def configuredLocation = getConfiguredLocation()
@@ -105,6 +109,14 @@ def initialize() {
     }
     
     refresh()
+}
+
+// A code push doesn't run updated(). The first status or MQTT message after one does.
+void checkVersion() {
+    if (state.version == CODE_VERSION) return
+    logger("info", "Code version ${CODE_VERSION} (was ${state.version ?: 'none'}); re-initializing")
+    state.version = CODE_VERSION
+    runIn(1, "updated")
 }
 
 def refresh() {
@@ -155,6 +167,7 @@ void scheduleMqttRetry(String why) {
 }
 
 def parse(message) {
+    checkVersion()
     def topic = interfaces.mqtt.parseMessage(message)
     def payload = new JsonSlurper().parseText(topic.payload)
     logger("trace", "parse(${payload})")
@@ -180,6 +193,7 @@ def mqttClientStatus(String message) {
 
 def processStateData(data) {
     logger("debug", "processStateData(${data})")
+    checkVersion()
 
     // REST answers a list for some appliances and a map for others; a failed REST call hands us null.
     if (data instanceof List) data = data ? data[0] : null

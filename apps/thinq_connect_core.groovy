@@ -20,6 +20,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 @Field List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field String DEFAULT_LOG_LEVEL = LOG_LEVELS[2]
+// Bump with any change that needs initialize() to run again (new schedules, subscriptions):
+// a code push alone doesn't run updated(), so checkVersion() does it.
+@Field static final String CODE_VERSION = "1.2.5"
 
 definition(
     name: "ThinQ Connect Integration",
@@ -391,6 +394,7 @@ def uninstalled() {
 
 def initialize() {
     logger("debug", "initialize()")
+    checkVersion(false)
 
     // Daily, at a minute picked once per install so hubs don't all call LG at the same time:
     // re-read every appliance (a backstop for missed pushes) and renew the event subscriptions,
@@ -454,8 +458,18 @@ def initialize() {
     }
 }
 
+// A code push doesn't run updated(). The first MQTT message, daily maintenance or button
+// press after one does, as a Done would.
+void checkVersion(boolean reinit = true) {
+    if (state.version == CODE_VERSION) return
+    logger("info", "Code version ${CODE_VERSION} (was ${state.version ?: 'none'})" + (reinit ? "; re-initializing" : ""))
+    state.version = CODE_VERSION
+    if (reinit) runIn(1, "updated")
+}
+
 void dailyMaintenance() {
     logger("debug", "dailyMaintenance()")
+    checkVersion()
     captureSecrets()
     for (Closure step in [{ refreshDevices() }, { registerPushNotifications() }, { ensureMqttHolder() }]) {
         try {
@@ -801,6 +815,7 @@ void deleteOrphanedDevices() {
 }
 
 void appButtonHandler(String btn) {
+    checkVersion()
     if (btn == "deleteOrphans") deleteOrphanedDevices()
 }
 
@@ -829,6 +844,7 @@ def retrieveMqttDetails() {
 
 def processMqttMessage(dev, payload) {
     logger("debug", "processMqttMessage(${dev}, ${payload})")
+    checkVersion()
 
     switch (payload.pushType) {
         case "DEVICE_STATUS":

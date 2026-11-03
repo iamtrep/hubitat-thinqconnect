@@ -12,6 +12,9 @@ import java.math.RoundingMode
 
 @Field List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field String DEFAULT_LOG_LEVEL = LOG_LEVELS[2]
+// Bump with any change that needs initialize() to run again (new schedules, MQTT handling):
+// a code push alone doesn't run updated(), so checkVersion() does it.
+@Field static final String CODE_VERSION = "1.2.5"
 // LG ThinQ Connect error codes meaning the appliance or model lacks a feature (LG SDK ThinQAPIErrorCodes)
 @Field static final List<String> NOT_SUPPORTED_CODES = ["1219", "1220", "1221", "2101", "2201", "2202"]
 
@@ -85,6 +88,7 @@ def uninstalled() {
 
 def initialize() {
     logger("debug", "initialize()")
+    state.version = CODE_VERSION
 
     if (getDataValue("master") == "true") {
         if (interfaces.mqtt.isConnected())
@@ -95,6 +99,14 @@ def initialize() {
     
     refresh()
     scheduleEnergyRefresh()
+}
+
+// A code push doesn't run updated(). The first status or MQTT message after one does.
+void checkVersion() {
+    if (state.version == CODE_VERSION) return
+    logger("info", "Code version ${CODE_VERSION} (was ${state.version ?: 'none'}); re-initializing")
+    state.version = CODE_VERSION
+    runIn(1, "updated")
 }
 
 def refresh() {
@@ -134,6 +146,7 @@ def mqttConnectUntilSuccessful() {
 }
 
 def parse(message) {
+    checkVersion()
     def topic = interfaces.mqtt.parseMessage(message)
     def payload = new JsonSlurper().parseText(topic.payload)
     logger("trace", "parse(${payload})")
@@ -178,6 +191,7 @@ void processNotification(String code) {
 
 def processStateData(data) {
     logger("debug", "processStateData(${data})")
+    checkVersion()
     // REST answers a list (one entry per location), MQTT reports may too; a failed
     // REST call hands us null.
     if (data instanceof List) data = data ? data[0] : null
