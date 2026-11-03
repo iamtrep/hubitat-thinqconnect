@@ -104,8 +104,7 @@ def mqttConnectUntilSuccessful() {
                                 privateKey: mqtt.privateKey,
                                 caCertificate: mqtt.caCertificate,
                                 clientCertificate: mqtt.certificate,
-                                cleanSession: true,
-                                ignoreSSLIssues: true)
+                                cleanSession: true)
         pauseExecution(3000)
         for (sub in mqtt.subscriptions) {
             interfaces.mqtt.subscribe(sub)

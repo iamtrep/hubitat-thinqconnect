@@ -124,7 +124,7 @@ def prefMain() {
         httpGet([
             uri: caCertUrl,
             textParser: true,
-            ignoreSSLIssues: true
+            timeout: 15
         ]) {
             resp ->
                 state.caCert = resp.data.text
@@ -375,9 +375,31 @@ def initialize() {
     
     // Register for push notifications
     registerPushNotifications()
-    
-    // Schedule periodic refresh, every Monday at 3am
-    schedule("0 0 3 ? * MON", refreshDevices)
+    ensureMqttHolder()
+
+    // Daily, at a minute picked once per install so hubs don't all call LG at the same time:
+    // re-read every appliance (a backstop for missed pushes) and renew the event subscriptions,
+    // as LG's Home Assistant integration does (MQTT_SUBSCRIPTION_INTERVAL = 1 day).
+    if (state.maintMinute == null) state.maintMinute = new Random().nextInt(60)
+    schedule("${new Random().nextInt(60)} ${state.maintMinute} 3 * * ?", "dailyMaintenance")
+}
+
+void dailyMaintenance() {
+    logger("debug", "dailyMaintenance()")
+    refreshDevices()
+    registerPushNotifications()
+    ensureMqttHolder()
+}
+
+// Exactly one child holds the MQTT connection. If that child was deleted, hand the job to
+// another one, or every device loses its pushes.
+void ensureMqttHolder() {
+    if (findMasterDevice()) return
+    def holder = getChildDevices().find { it.hasCapability("Initialize") }
+    if (!holder) return
+    logger("info", "${holder.displayName} now holds the MQTT connection")
+    holder.updateDataValue("master", "true")
+    holder.initialize()
 }
 
 def getDriverName(deviceType) {
@@ -508,8 +530,8 @@ def getDeviceProfile(deviceId) {
 
 def getDeviceStatus(deviceDetails, childDevice) {
     logger("debug", "getDeviceStatus(${deviceDetails.id})")
-    
-    def status = apiGet("/devices/${deviceDetails.id}/state")
+
+    def status = getDeviceState(deviceDetails.id)
 
     if (status != null && childDevice != null) {
         childDevice.processStateData(status)
@@ -517,8 +539,29 @@ def getDeviceStatus(deviceDetails, childDevice) {
     return status
 }
 
+// Every status read goes through here (the drivers' refresh too). An appliance LG reports as
+// not connected (1222) is remembered; when it answers again its event subscription is renewed,
+// since one requested while it was offline may not have taken (seen 2026-11-02).
 def getDeviceState(deviceId) {
-    return apiGet("/devices/${deviceId}/state")
+    def status = apiGet("/devices/${deviceId}/state")
+    Map offline = (state.offlineDevices ?: [:]) as Map
+    String id = deviceId.toString()
+    if (status == null && state.lastApiError?.code == "1222") {
+        if (!offline[id]) {
+            offline[id] = now()
+            state.offlineDevices = offline
+        }
+    } else if (status != null && offline[id]) {
+        offline.remove(id)
+        state.offlineDevices = offline
+        logger("info", "Appliance ${id} is back online; renewing its event subscription")
+        subscribeEvents(id)
+    }
+    return status
+}
+
+void subscribeEvents(String deviceId) {
+    apiPost("/event/${deviceId}/subscribe", [expire: [unit: "HOUR", timer: 4464]])
 }
 
 def registerPushNotifications() {
@@ -527,7 +570,7 @@ def registerPushNotifications() {
     for (deviceId in selectedDevices) {
         try {
             //apiPost("/push/${deviceId}/subscribe", [:])
-            apiPost("/event/${deviceId}/subscribe", [expire: [unit: "HOUR", timer: 4464]])
+            subscribeEvents(deviceId.toString())
         } catch (Exception e) {
             logger("warn", "Failed to register notifications for device ${deviceId}: ${e}")
         }
@@ -557,7 +600,7 @@ def apiGet(endpoint) {
             uri: uri,
             headers: headers,
             requestContentType: "application/json",
-            ignoreSSLIssues: true
+            timeout: 30
         ]) { resp ->
             if (resp.status == 200) {
                 result = resp.data?.response
@@ -587,7 +630,7 @@ def apiPost(endpoint, body) {
             headers: headers,
             requestContentType: "application/json",
             body: body,
-            ignoreSSLIssues: true
+            timeout: 30
         ]) { resp ->
             if (resp.status == 200) {
                 logger("debug", "API POST success: ${resp.status} - ${resp.data}")
@@ -615,7 +658,8 @@ void recordApiError(String what, Exception e) {
     } catch (ignored) { }
     def err = (body instanceof Map) ? body.error : null
     state.lastApiError = [status: status, code: err?.code?.toString(), message: err?.message?.toString(), text: e.message]
-    logger("warn", "API ${what} failed: ${describeApiError(state.lastApiError)}")
+    // 1207 = already subscribed: the daily renewal hits it, and it means the subscription holds
+    logger(state.lastApiError.code == "1207" ? "debug" : "warn", "API ${what} failed: ${describeApiError(state.lastApiError)}")
 }
 
 String describeApiError(Map err) {
@@ -650,6 +694,12 @@ def findMasterDevice() {
 
 def cleanupChildDevices() {
     logger("debug", "cleanupChildDevices()")
+    // An empty selection is more likely lost settings than a request to delete every appliance
+    // (and the automations using them): keep the devices and say so.
+    if (!selectedDevices) {
+        if (getChildDevices()) logger("warn", "No devices selected; keeping the existing ones. Remove a device from its own page to delete it.")
+        return
+    }
 
     for (d in getChildDevices()) {
         def deviceId = d.deviceNetworkId.replace("thinqconnect:", "")
