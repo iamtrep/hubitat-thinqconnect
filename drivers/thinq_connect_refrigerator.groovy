@@ -11,6 +11,9 @@ import groovy.json.JsonSlurper
 
 @Field List<String> LOG_LEVELS = ["error", "warn", "info", "debug", "trace"]
 @Field String DEFAULT_LOG_LEVEL = LOG_LEVELS[2]
+// Bump with any change that needs initialize() to run again (new schedules, MQTT handling):
+// a code push alone doesn't run updated(), so checkVersion() does it.
+@Field static final String CODE_VERSION = "1.2.5"
 
 metadata {
     definition(name: "ThinQ Connect Refrigerator", namespace: "jonozzz", author: "Ionut Turturica",
@@ -67,6 +70,7 @@ def uninstalled() {
 
 def initialize() {
     logger("debug", "initialize()")
+    state.version = CODE_VERSION
 
     if (getDataValue("master") == "true") {
         if (interfaces.mqtt.isConnected())
@@ -76,6 +80,14 @@ def initialize() {
     }
     
     refresh()
+}
+
+// A code push doesn't run updated(). The first status or MQTT message after one does.
+void checkVersion() {
+    if (state.version == CODE_VERSION) return
+    logger("info", "Code version ${CODE_VERSION} (was ${state.version ?: 'none'}); re-initializing")
+    state.version = CODE_VERSION
+    runIn(1, "updated")
 }
 
 def refresh() {
@@ -114,6 +126,7 @@ def mqttConnectUntilSuccessful() {
 }
 
 def parse(message) {
+    checkVersion()
     def topic = interfaces.mqtt.parseMessage(message)
     def payload = new JsonSlurper().parseText(topic.payload)
     logger("trace", "parse(${payload})")
@@ -138,6 +151,7 @@ def mqttClientStatus(String message) {
 
 def processStateData(data) {
     logger("debug", "processStateData(${data})")
+    checkVersion()
     // Normalize payload – API may return a Map or a List with a single Map entry
     if (!data) return
 
