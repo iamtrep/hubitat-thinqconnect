@@ -109,6 +109,9 @@ def mqttConnectUntilSuccessful() {
     logger("debug", "mqttConnectUntilSuccessful()")
 
     try {
+        // A retry can find a half-open connection (e.g. connect worked, subscribe failed)
+        if (interfaces.mqtt.isConnected()) interfaces.mqtt.disconnect()
+
         def mqtt = parent.retrieveMqttDetails()
 
         interfaces.mqtt.connect(mqtt.server,
@@ -127,8 +130,7 @@ def mqttConnectUntilSuccessful() {
         return true
     }
     catch (e) {
-        logger("warn", "Lost connection to MQTT, retrying in 15 seconds ${e}")
-        runIn(15, "mqttConnectUntilSuccessful")
+        scheduleMqttRetry("connect failed: ${e}")
         return false
     }
 }
@@ -142,18 +144,30 @@ def parse(message) {
     parent.processMqttMessage(this, payload)
 }
 
+// Retry 15 s after a failure, doubling up to 10 min; a successful connection resets it.
+// A broker that accepts and then drops the connection would otherwise loop every few seconds.
+void scheduleMqttRetry(String why) {
+    int n = (state.mqttRetries ?: 0) as int
+    int delay = Math.min(15 * (1 << Math.min(n, 6)), 600)
+    state.mqttRetries = n + 1
+    logger("warn", "MQTT ${why}; retrying in ${delay} s")
+    runIn(delay, "mqttConnectUntilSuccessful")
+}
+
 def mqttClientStatus(String message) {
     logger("debug", "mqttClientStatus(${message})")
 
     if (message.startsWith("Error:")) {
         logger("error", "MQTT Error: ${message}")
-
         try {
             interfaces.mqtt.disconnect()
         }
         catch (e) {
         }
-        mqttConnectUntilSuccessful()
+        scheduleMqttRetry("error")
+    } else if (message.contains("Connection succeeded")) {
+        state.mqttRetries = 0
+        unschedule("mqttConnectUntilSuccessful")   // a retry still pending would drop this connection
     }
 }
 
@@ -318,6 +332,9 @@ def setDelayStart(hours) {
     logger("debug", "setDelayStart(${hours})")
     def deviceId = getDeviceId()
     def command = [
+        location: [
+            locationName: "MAIN"
+        ],
         timer: [
             relativeHourToStart: hours
         ]
@@ -345,17 +362,15 @@ int storedTimer(String key) {
     return v?.isInteger() ? v.toInteger() : 0
 }
 
+// The old version stripped everything up to the last underscore, so NORMAL_WASH became "Wash"
+// and TEMPERATURE_LEVEL_EXTRA_LOW became "Low", and distinct values could collide.
 def cleanEnumValue(value) {
     if (value == null) return ""
-    
-    // Convert enum values to readable format
     return value.toString()
-        .replaceAll(/^[A-Z_]+_/, "")  // Remove prefix
-        .replaceAll(/_/, " ")         // Replace underscores with spaces
-        .toLowerCase()                // Convert to lowercase
-        .split(' ')                   // Split into words
-        .collect { it.capitalize() }  // Capitalize each word
-        .join(' ')                    // Join back together
+        .toLowerCase()
+        .split('_')
+        .collect { it.capitalize() }
+        .join(' ')
 }
 
 def convertSecondsToTime(int sec) {
