@@ -450,11 +450,6 @@ def getDeviceId() {
     return device.deviceNetworkId.replace("thinqconnect:", "")
 }
 
-def getDeviceDetails() {
-    def deviceId = getDeviceId()
-    return parent.state.foundDevices.find { it.id == deviceId }
-}
-
 int storedTimer(String key) {
     def v = getDataValue(key)
     return v?.isInteger() ? v.toInteger() : 0

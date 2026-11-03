@@ -318,11 +318,6 @@ def getDeviceId() {
     return device.deviceNetworkId.replace("thinqconnect:", "")
 }
 
-def getDeviceDetails() {
-    def deviceId = getDeviceId()
-    return parent.state.foundDevices.find { it.id == deviceId }
-}
-
 private def getResourceEntry(resource) {
     if (!resource) return null
     if (resource instanceof List) {

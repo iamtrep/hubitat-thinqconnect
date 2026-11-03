@@ -331,11 +331,6 @@ def getDeviceId() {
     return device.deviceNetworkId.replace("thinqconnect:", "")
 }
 
-def getDeviceDetails() {
-    def deviceId = getDeviceId()
-    return parent.state.foundDevices.find { it.id == deviceId }
-}
-
 // Powered on but idle, paused, finished, waiting for a delayed start or in error: not running.
 // Anything else (DETECTING, RUNNING, DRYING, COOLING, ...) is part of a cycle.
 boolean isRunningState(state) {
