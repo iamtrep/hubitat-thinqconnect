@@ -48,7 +48,10 @@ preferences {
     "DEVICE_WASHTOWER_WASHER",
     "DEVICE_WASHTOWER_DRYER",
     "DEVICE_MICROWAVE_OVEN",
-    "DEVICE_AIR_CONDITIONER"
+    "DEVICE_AIR_CONDITIONER",
+    "DEVICE_AIR_PURIFIER",
+    "DEVICE_STYLER",
+    "DEVICE_DEHUMIDIFIER"
 ]
 
 @Field static def countryNameMap = [
@@ -340,6 +343,12 @@ def getDriverName(deviceType) {
             return "ThinQ Connect Microwave Oven"
         case "DEVICE_AIR_CONDITIONER":
             return "ThinQ Connect Air Conditioner"
+        case "DEVICE_AIR_PURIFIER": 
+            return "ThinQ Connect Air Purifier"
+        case "DEVICE_STYLER": 
+            return "ThinQ Connect Styler"
+        case "DEVICE_DEHUMIDIFIER":
+            return "ThinQ Connect Dehumidifier"
         default:
             return null
     }
@@ -516,6 +525,10 @@ def apiGet(endpoint) {
         }
         logger("debug", "apiGet(${endpoint}, ${result})")
         return result
+    } catch (groovyx.net.http.HttpResponseException e) {
+        def resp = e.response
+        logger("error", "API GET exception: (${resp.status}) ${resp.data}")
+        return null
     } catch (Exception e) {
         logger("error", "API GET exception: ${e}")
         return null
@@ -564,7 +577,15 @@ def getApiHeaders() {
 }
 
 def generateMessageId() {
-    return UUID.randomUUID().toString().replaceAll(/-/, "")[0..21]
+    byte[] uuidBytes = UUID.randomUUID()
+        .toString()
+        .replaceAll(/-/, "")
+        .decodeHex()
+    return uuidBytes.encodeBase64()
+        .toString()
+        .replace("+", "-")
+        .replace("/", "_")
+        .replace("=", "")
 }
 
 def findMasterDevice() {
