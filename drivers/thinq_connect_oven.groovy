@@ -138,7 +138,8 @@ void scheduleMqttRetry(String why) {
     int n = (state.mqttRetries ?: 0) as int
     int delay = Math.min(15 * (1 << Math.min(n, 6)), 600)
     state.mqttRetries = n + 1
-    logger("warn", "MQTT ${why}; retrying in ${delay} s")
+    // One drop usually heals on the first retry; only a run of failures is an error
+    logger(n >= 3 ? "error" : "warn", "MQTT ${why}; retrying in ${delay} s")
     runIn(delay, "mqttConnectUntilSuccessful")
 }
 
@@ -154,13 +155,12 @@ def mqttClientStatus(String message) {
     logger("debug", "mqttClientStatus(${message})")
 
     if (message.startsWith("Error:")) {
-        logger("error", "MQTT Error: ${message}")
         try {
             interfaces.mqtt.disconnect()
         }
         catch (e) {
         }
-        scheduleMqttRetry("error")
+        scheduleMqttRetry(message)
     } else if (message.contains("Connection succeeded")) {
         state.mqttRetries = 0
         unschedule("mqttConnectUntilSuccessful")   // a retry still pending would drop this connection
