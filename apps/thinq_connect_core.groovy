@@ -638,7 +638,15 @@ def getApiHeaders() {
 }
 
 def generateMessageId() {
-    return UUID.randomUUID().toString().replaceAll(/-/, "")[0..21]
+    byte[] uuidBytes = UUID.randomUUID()
+        .toString()
+        .replaceAll(/-/, "")
+        .decodeHex()
+    return uuidBytes.encodeBase64()
+        .toString()
+        .replace("+", "-")
+        .replace("/", "_")
+        .replace("=", "")
 }
 
 def findMasterDevice() {
