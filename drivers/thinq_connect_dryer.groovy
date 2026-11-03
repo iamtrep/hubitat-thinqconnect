@@ -36,6 +36,7 @@ metadata {
         attribute "totalTimeDisplay", "string"
         attribute "finishTimeDisplay", "string"
         attribute "currentState", "string"
+        attribute "notification", "string"
         attribute "error", "string"
         attribute "operationMode", "string"
         attribute "remoteControlEnabled", "string"
@@ -166,6 +167,14 @@ def mqttClientStatus(String message) {
         state.mqttRetries = 0
         unschedule("mqttConnectUntilSuccessful")   // a retry still pending would drop this connection
     }
+}
+
+// LG's own notifications (pushCode from /push), e.g. washing_is_complete. Every one is an event,
+// even when it repeats the last one, so a rule fires for each load.
+void processNotification(String code) {
+    String value = code.toLowerCase()
+    sendEvent(name: "notification", value: value, isStateChange: true, descriptionText: "${device.displayName} LG notification: ${value}")
+    if (logDescText) log.info "${device.displayName} LG notification: ${value}"
 }
 
 def processStateData(data) {
