@@ -275,8 +275,7 @@ private def processWasherState(data) {
         sendEvent(name: "washerRunTime", value: runTime, unit: "seconds")
         sendEvent(name: "washerRunTimeDisplay", value: convertSecondsToTime(runTime))
 
-        Date finishTime = new Date(now() + remainingTime * 1000L)
-        sendEvent(name: "washerFinishTimeDisplay", value: finishTime.format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone))
+        updateFinishTime("washerFinishTimeDisplay", remainingTime)
     }
 
     if (data.timer?.relativeHourToStart != null) {
@@ -343,8 +342,7 @@ private def processDryerState(data) {
         sendEvent(name: "dryerRunTime", value: runTime, unit: "seconds")
         sendEvent(name: "dryerRunTimeDisplay", value: convertSecondsToTime(runTime))
 
-        Date finishTime = new Date(now() + remainingTime * 1000L)
-        sendEvent(name: "dryerFinishTimeDisplay", value: finishTime.format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone))
+        updateFinishTime("dryerFinishTimeDisplay", remainingTime)
     }
 
     if (data.timer?.relativeHourToStart != null) {
@@ -495,4 +493,19 @@ private logger(level, msg) {
             log."${level}" "${device.displayName} ${msg}"
         }
     }
+}
+
+// finishTime = now + remaining, so every message moves it by a few seconds and each refresh of an
+// idle appliance (remaining 0) logged a new "now". Send it only while time remains, and only when
+// it moves by more than 90 s; at 0 it keeps the time the last cycle was due to end.
+private void updateFinishTime(String attr, int remainingTime) {
+    if (remainingTime <= 0) return
+    long finish = now() + remainingTime * 1000L
+    String current = device.currentValue(attr)
+    if (current) {
+        try {
+            if (Math.abs(finish - Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", current).time) < 90000L) return
+        } catch (Exception ignored) { }   // an unparseable old value is replaced
+    }
+    sendEvent(name: attr, value: new Date(finish).format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone))
 }
