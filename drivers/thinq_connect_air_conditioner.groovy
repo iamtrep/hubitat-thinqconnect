@@ -239,7 +239,7 @@ def processStateData(data) {
     def isPoweredOff = false
     if (currentState || airConOpModeRaw) {
         def modeText = currentState ?: airConOpModeRaw ?: ""
-        isPoweredOff = (modeText =~ /(?i)power_off|off/)
+        isPoweredOff = (modeText =~ /(?i)power_off|off/).asBoolean()
         def switchState = isPoweredOff ? 'off' : 'on'
         sendEvent(name: "switch", value: switchState)
         if (logDescText && currentState) {
@@ -589,7 +589,7 @@ def setCoolTargetTemperature(temperature) {
 def setCoolingSetpoint(temperature) {
     logger("debug", "setCoolingSetpoint(${temperature})")
     // Thermostat cooling setpoint maps to single-set target temperature
-    setTargetTemperature(temperature)
+    setCoolTargetTemperature(temperature)
 }
 
 def setHeatingSetpoint(temperature) {
