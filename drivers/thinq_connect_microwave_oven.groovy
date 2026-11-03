@@ -14,7 +14,7 @@ import groovy.json.JsonSlurper
 
 metadata {
     definition(name: "ThinQ Connect Microwave Oven", namespace: "jonozzz", author: "Ionut Turturica",
-               importUrl: "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_microwave_oven.groovy") {
+               importUrl: "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_microwave_oven.groovy") {
         capability "Sensor"
         capability "Switch"
         capability "Initialize"

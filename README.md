@@ -1,5 +1,13 @@
 # ThinQ Connect Integration for Hubitat
 
+> **This is a fork** of [jonozzz/hubitat-thinqconnect](https://github.com/jonozzz/hubitat-thinqconnect).
+> Its `main` adds: setup that creates the MQTT key on the hub and stores the token and key encrypted,
+> clearer setup guidance and errors, and washer and dryer fixes (remaining time, running state, a
+> switch that can't stop a cycle unless allowed). Install it in HPM from
+> `https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/packageManifest.json`.
+> The fixes are on topic branches (`laundry-fixes`, `setup-hub-key`) for upstream.
+
+
 This is a new Hubitat integration for LG ThinQ devices using the official LG ThinQ Connect API with PAT (Personal Access Token) authentication. This integration replaces the older reverse-engineered approach with the official documented API. Official API documentation: https://smartsolution.developer.lge.com/en/apiManage/thinq_connect
 
 ## Features

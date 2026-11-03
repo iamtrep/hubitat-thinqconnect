@@ -1,15 +1,15 @@
 {
-  "packageName": "LG ThinQ Connect Integration",
+  "packageName": "LG ThinQ Connect Integration (iamtrep fork)",
   "author": "Ionut Turturica",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "minimumHEVersion": "2.2.9",
-  "dateReleased": "2026-05-11",
+  "dateReleased": "2026-11-02",
   "apps": [
     {
       "id": "5ba769b6-f5c4-4065-88dd-d86a0a46a421",
       "name": "ThinQ Connect Integration",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/apps/thinq_connect_core.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/apps/thinq_connect_core.groovy",
       "required": true,
       "oauth": false,
       "primary": false
@@ -20,64 +20,66 @@
       "id": "b736791a-8f6a-4c88-a0a6-87102c2c1700",
       "name": "ThinQ Connect Washer",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_washer.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_washer.groovy",
       "required": false
     },
     {
       "id": "1445a1b8-6839-470f-8da3-852e7635e14c",
       "name": "ThinQ Connect Dryer",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_dryer.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_dryer.groovy",
       "required": false
     },
     {
       "id": "b6994602-7708-4a14-b99f-e2e4267cd017",
       "name": "ThinQ Connect Dishwasher",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_dishwasher.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_dishwasher.groovy",
       "required": false
     },
     {
       "id": "4ca78989-511c-4f1d-ba39-910814fd3339",
       "name": "ThinQ Connect Cooktop",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_cooktop.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_cooktop.groovy",
       "required": false
     },
     {
       "id": "c6626634-4630-418b-b082-ab76f99ede11",
       "name": "ThinQ Connect Oven",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_oven.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_oven.groovy",
       "required": false
     },
     {
       "id": "82ebb55f-4cb3-44ba-9999-fa498cb24a42",
       "name": "ThinQ Connect Refrigerator",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_refrigerator.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_refrigerator.groovy",
       "required": false
     },
     {
       "id": "e01512fb-ee60-4042-b7e1-4458124fa022",
       "name": "ThinQ Connect Microwave Oven",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_microwave_oven.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_microwave_oven.groovy",
       "required": false
     },
     {
       "id": "bdf6765c-7004-45ff-a7c3-71b236381865",
       "name": "ThinQ Connect Air Conditioner",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_air_conditioner.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_air_conditioner.groovy",
       "required": false
     },
     {
       "id": "6f6329b0-1a9c-4f6f-958e-6f73d4a8d31a",
       "name": "ThinQ Connect WashTower",
       "namespace": "jonozzz",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_washtower.groovy",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_washtower.groovy",
       "required": false
     }
-  ]
+  ],
+  "documentationLink": "https://github.com/iamtrep/hubitat-thinqconnect",
+  "releaseNotes": "1.2.5 (iamtrep fork): setup creates the MQTT key and certificate request on the hub, links LG's token page and shows LG's error reason; the token and key are stored encrypted. Washer and dryer: remaining time stays correct on partial updates, the switch shows whether a cycle is running, Switch on/off no longer starts or stops a cycle unless enabled in preferences, and a refresh follows each state change. API request IDs use LG's format."
 }

@@ -1,12 +1,12 @@
 {
   "author": "Ionut Turturica",
-  "gitHubUrl": "https://github.com/jonozzz/hubitat-thinqconnect",
+  "gitHubUrl": "https://github.com/iamtrep/hubitat-thinqconnect",
   "packages": [
     {
       "id": "22c5a53b-f44f-4aeb-aa3f-f29ee64876c3",
-      "name": "LG ThinQ Connect Integration",
+      "name": "LG ThinQ Connect Integration (iamtrep fork)",
       "category": "Integrations",
-      "location": "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/packageManifest.json",
+      "location": "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/packageManifest.json",
       "description": "This is a new Hubitat integration for LG ThinQ devices using the official LG ThinQ Connect API with PAT (Personal Access Token) authentication.",
       "tags": [
         "Cloud",

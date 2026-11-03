@@ -34,7 +34,7 @@ import groovy.json.JsonSlurper
 
 metadata {
     definition(name: "ThinQ Connect Cooktop", namespace: "jonozzz", author: "Ionut Turturica",
-               importUrl: "https://raw.githubusercontent.com/jonozzz/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_cooktop.groovy") {
+               importUrl: "https://raw.githubusercontent.com/iamtrep/hubitat-thinqconnect/refs/heads/main/drivers/thinq_connect_cooktop.groovy") {
         capability "Sensor"
         capability "Switch"
         capability "Initialize"
