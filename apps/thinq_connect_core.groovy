@@ -336,6 +336,14 @@ def prefDevices() {
                 paragraph "No supported devices found. Supported types: ${supportedDeviceTypes.join(', ')}"
             }
         }
+        List orphans = orphanedDevices()
+        if (orphans) {
+            section("Devices no longer selected") {
+                paragraph "Kept so the rules and dashboards using them don't lose them, but they stop getting updates: ${orphans*.displayName.join(', ')}. " +
+                          "Select them again above, or delete them."
+                input "deleteOrphans", "button", title: "Delete these devices"
+            }
+        }
     }
 }
 
@@ -393,9 +401,9 @@ def initialize() {
     state.remove("offlineDevices")   // replaced by one offline_<id> key per appliance
 
     try {
-        cleanupChildDevices()
+        reportOrphanedDevices()
     } catch (Exception e) {
-        logger("error", "Cleaning up devices failed: ${e}")
+        logger("error", "Checking for devices no longer selected failed: ${e}")
     }
 
     // One appliance failing (a driver not installed, a bad status) must not stop the others
@@ -771,30 +779,29 @@ def findMasterDevice() {
     }
 }
 
-def cleanupChildDevices() {
-    logger("debug", "cleanupChildDevices()")
-    // An empty selection is more likely lost settings than a request to delete every appliance
-    // (and the automations using them): keep the devices and say so.
-    if (!selectedDevices) {
-        if (getChildDevices()) logger("warn", "No devices selected; keeping the existing ones. Remove a device from its own page to delete it.")
-        return
+// Devices whose appliance is no longer selected. They are kept, not deleted: rules, dashboards
+// and labels may use them, and an empty selection is more likely lost settings than a request
+// to delete every appliance. The device selection page lists them with a button to delete them.
+List orphanedDevices() {
+    Set<String> selected = (selectedDevices ?: []).collect { "thinqconnect:${it}".toString() } as Set
+    return getChildDevices().findAll { !selected.contains(it.deviceNetworkId) }
+}
+
+void reportOrphanedDevices() {
+    List orphans = orphanedDevices()
+    if (orphans) logger("warn", "Kept devices no longer selected: ${orphans*.displayName.join(', ')}. Delete them from the device selection page.")
+}
+
+void deleteOrphanedDevices() {
+    for (d in orphanedDevices()) {
+        logger("info", "Deleting ${d.displayName}")
+        deleteChildDevice(d.deviceNetworkId)
     }
+    ensureMqttHolder()   // the holder may have been one of them
+}
 
-    for (d in getChildDevices()) {
-        def deviceId = d.deviceNetworkId.replace("thinqconnect:", "")
-
-        def deviceFound = false
-        for (dev in selectedDevices) {
-            if (dev == deviceId) {
-                deviceFound = true
-                break
-            }
-        }
-
-        if (!deviceFound) {
-            deleteChildDevice(d.deviceNetworkId)
-        }
-    }
+void appButtonHandler(String btn) {
+    if (btn == "deleteOrphans") deleteOrphanedDevices()
 }
 
 def retrieveMqttDetails() {
