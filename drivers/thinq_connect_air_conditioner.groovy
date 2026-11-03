@@ -162,6 +162,9 @@ def mqttConnectUntilSuccessful() {
     logger("debug", "mqttConnectUntilSuccessful()")
 
     try {
+        // A retry can find a half-open connection (e.g. connect worked, subscribe failed)
+        if (interfaces.mqtt.isConnected()) interfaces.mqtt.disconnect()
+
         def mqtt = parent.retrieveMqttDetails()
 
         interfaces.mqtt.connect(mqtt.server,
@@ -172,8 +175,7 @@ def mqttConnectUntilSuccessful() {
                                 privateKey: mqtt.privateKey,
                                 caCertificate: mqtt.caCertificate,
                                 clientCertificate: mqtt.certificate,
-                                cleanSession: true,
-                                ignoreSSLIssues: true)
+                                cleanSession: true)
         pauseExecution(3000)
         for (sub in mqtt.subscriptions) {
             interfaces.mqtt.subscribe(sub)
@@ -181,10 +183,19 @@ def mqttConnectUntilSuccessful() {
         return true
     }
     catch (e) {
-        logger("warn", "Lost connection to MQTT, retrying in 15 seconds ${e}")
-        runIn(15, "mqttConnectUntilSuccessful")
+        scheduleMqttRetry("connect failed: ${e}")
         return false
     }
+}
+
+// Retry 15 s after a failure, doubling up to 10 min; a successful connection resets it.
+// A broker that accepts and then drops the connection would otherwise loop every few seconds.
+void scheduleMqttRetry(String why) {
+    int n = (state.mqttRetries ?: 0) as int
+    int delay = Math.min(15 * (1 << Math.min(n, 6)), 600)
+    state.mqttRetries = n + 1
+    logger("warn", "MQTT ${why}; retrying in ${delay} s")
+    runIn(delay, "mqttConnectUntilSuccessful")
 }
 
 def parse(message) {
@@ -200,25 +211,24 @@ def mqttClientStatus(String message) {
 
     if (message.startsWith("Error:")) {
         logger("error", "MQTT Error: ${message}")
-
         try {
             interfaces.mqtt.disconnect()
         }
         catch (e) {
         }
-        mqttConnectUntilSuccessful()
+        scheduleMqttRetry("error")
+    } else if (message.contains("Connection succeeded")) {
+        state.mqttRetries = 0
+        unschedule("mqttConnectUntilSuccessful")   // a retry still pending would drop this connection
     }
 }
 
 def processStateData(data) {
     logger("debug", "processStateData(${data})")
 
-    // Normalize payload – API may return a Map or a List with a single Map entry
+    // REST answers a list for some appliances and a map for others; a failed REST call hands us null.
+    if (data instanceof List) data = data ? data[0] : null
     if (!data) return
-    if (data instanceof List) {
-        if (data.isEmpty()) return
-        data = data[0]
-    }
     if (!(data instanceof Map)) return
 
     // Process current state
@@ -244,11 +254,12 @@ def processStateData(data) {
         sendEvent(name: "airConOperationMode", value: opMode)
     }
 
-    // Derive switch state from runState or operation mode
-    def isPoweredOff = false
-    if (currentState || airConOpModeRaw) {
-        def modeText = currentState ?: airConOpModeRaw ?: ""
-        isPoweredOff = (modeText =~ /(?i)power_off|off/)
+    // Derive switch state from runState or operation mode (explicit boolean: a Matcher is truthy on any find)
+    boolean powerKnown = (currentState || airConOpModeRaw) as boolean
+    boolean isPoweredOff = (device.currentValue("switch") == "off")
+    if (powerKnown) {
+        def modeText = currentState ?: airConOpModeRaw
+        isPoweredOff = modeText.toString() ==~ /(?i)(power_off|off)/
         def switchState = isPoweredOff ? 'off' : 'on'
         sendEvent(name: "switch", value: switchState)
         if (logDescText && currentState) {
@@ -256,13 +267,15 @@ def processStateData(data) {
         }
     }
 
-    // Derive thermostatMode from job mode + power state
-    def thermostatMode = lgJobModeToThermostatMode(currentJobModeRaw, isPoweredOff)
-    sendEvent(name: "thermostatMode", value: thermostatMode)
-
-    // Derive thermostatOperatingState
-    def operatingState = isPoweredOff ? "idle" : lgJobModeToOperatingState(currentJobModeRaw)
-    sendEvent(name: "thermostatOperatingState", value: operatingState)
+    // A message carries only what changed: derive thermostatMode/OperatingState only when it carries
+    // the job mode or the power state, and take the missing half from the device's current values.
+    if (currentJobModeRaw != null || powerKnown) {
+        def jobModeForThermostat = currentJobModeRaw ?: device.currentValue("currentJobMode")?.toString()?.toUpperCase()?.replace(' ', '_')
+        if (isPoweredOff || jobModeForThermostat) {
+            sendEvent(name: "thermostatMode", value: lgJobModeToThermostatMode(jobModeForThermostat, isPoweredOff))
+            sendEvent(name: "thermostatOperatingState", value: isPoweredOff ? "idle" : lgJobModeToOperatingState(jobModeForThermostat))
+        }
+    }
 
     if (data.operation?.airCleanOperationMode) {
         def cleanMode = cleanEnumValue(data.operation.airCleanOperationMode)
@@ -852,15 +865,11 @@ def getDeviceDetails() {
 
 def cleanEnumValue(value) {
     if (value == null) return ""
-    
-    // Convert enum values to readable format
     return value.toString()
-        .replaceAll(/^[A-Z_]+_/, "")  // Remove prefix
-        .replaceAll(/_/, " ")         // Replace underscores with spaces
-        .toLowerCase()                // Convert to lowercase
-        .split(' ')                   // Split into words
-        .collect { it.capitalize() }  // Capitalize each word
-        .join(' ')                    // Join back together
+        .toLowerCase()
+        .split('_')
+        .collect { it.capitalize() }
+        .join(' ')
 }
 
 def convertSecondsToTime(int sec) {
