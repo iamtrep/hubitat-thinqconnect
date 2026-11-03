@@ -120,14 +120,20 @@ def prefMain() {
     if (state.client_id == null)
         state.client_id = "thinq-open-" + (UUID.randomUUID().toString().replaceAll(/-/,""))
 
+    String caError = null
     if (state.caCert == null) {
-        httpGet([
-            uri: caCertUrl,
-            textParser: true,
-            timeout: 15
-        ]) {
-            resp ->
-                state.caCert = resp.data.text
+        try {
+            httpGet([
+                uri: caCertUrl,
+                textParser: true,
+                timeout: 15
+            ]) {
+                resp ->
+                    state.caCert = resp.data.text
+            }
+        } catch (Exception e) {
+            caError = e.message
+            logger("warn", "Could not download Amazon's root certificate from ${caCertUrl}: ${e.message}")
         }
     }
 
@@ -142,6 +148,10 @@ def prefMain() {
             paragraph "<b>2. Paste the token and pick your country</b> on the next page; it tests the connection."
             paragraph "<b>3. Live updates:</b> the hub creates the key and certificate request it needs for LG's push service. Nothing to install on a computer."
             paragraph "Appliances must be online in the LG ThinQ app (Wi-Fi icon lit) for Hubitat to read them."
+            if (caError) {
+                paragraph "❌ The hub couldn't download Amazon's root certificate (${caCertUrl}), which live updates need: ${caError}. " +
+                          "Check that a DNS filter doesn't block amazontrust.com, then open this page again."
+            }
         }
     }
 }
@@ -241,7 +251,12 @@ def prefMqtt() {
 // The pasted request wins; otherwise the one the hub generated on the MQTT page. The private
 // key that goes with either is in state.mqttKeyEnc.
 String effectiveCsr() { return csrData ?: state.generatedCsr }
-String effectiveKey() { return secretValue("mqttKey", "mqttKeyEnc") }
+// A pasted request must come with its own key; never pair it with the hub-generated one, or LG
+// certifies a key the hub doesn't hold and MQTT fails without a visible cause.
+String effectiveKey() {
+    if (csrData && !state.customKey) return null
+    return secretValue("mqttKey", "mqttKeyEnc")
+}
 
 def prefMQTTClient() {
     captureSecrets()
@@ -251,7 +266,12 @@ def prefMQTTClient() {
     return dynamicPage(name: "prefMQTTClient", title: "MQTT Client Registration", nextPage: "prefDevices", uninstall: false, install: false) {
         section {
             if(!state.clientCertificate || !state.mqttSubscriptions || state.pk_sig != pk_sig)
-                if (patValue() && countryCode && state.mqttServer && effectiveCsr() && effectiveKey()) {
+                if (state.certFailedAt && now() - (state.certFailedAt as long) < 60000L) {
+                    // A reload right after a failure would ask LG for another certificate at once
+                    paragraph "⏳ LG refused a certificate less than a minute ago. Wait a minute, then go Back and Next to retry."
+                } else if (csrData && !state.customKey) {
+                    paragraph "❌ The pasted certificate request needs its private key: go Back and paste both, or clear the request to use the hub's own key."
+                } else if (patValue() && countryCode && state.mqttServer && effectiveCsr() && effectiveKey()) {
                     def mqttResult = setupMqttClient()
                     if (mqttResult.success) {
                         paragraph "✅ MQTT client registered and certificate issued successfully"
@@ -259,7 +279,9 @@ def prefMQTTClient() {
                         state.mqttSubscriptions = mqttResult.subscriptions
                         state.clientCertificate = mqttResult.certificate
                         state.pk_sig = pk_sig
+                        state.remove("certFailedAt")
                     } else {
+                        state.certFailedAt = now()
                         // paragraph "Try again in 1-2 minutes"
                         paragraph "❌ MQTT setup failed: ${mqttResult.error}. LG limits how often it issues certificates: wait a minute, then go Back and Next to retry."
                     }
@@ -336,6 +358,14 @@ def updated() {
 
 def uninstalled() {
     logger("debug", "uninstalled()")
+    // Leave nothing subscribed on LG's side (Home Assistant unsubscribes the same way)
+    for (deviceId in (selectedDevices ?: [])) {
+        try {
+            apiRequest("DELETE", "/event/${deviceId}/unsubscribe")
+        } catch (Exception e) {
+            logger("warn", "Could not unsubscribe ${deviceId}: ${e}")
+        }
+    }
     String prefix = "${app.id}:"
     SECRET_CACHE.keySet().removeIf { String k -> k.startsWith(prefix) }
     unschedule()
@@ -346,49 +376,72 @@ def uninstalled() {
 
 def initialize() {
     logger("debug", "initialize()")
-    
-    cleanupChildDevices()
-    
-    for (deviceId in selectedDevices) {
-        def deviceDetails = state.foundDevices.find { it.id == deviceId }
-        if (!deviceDetails) continue
-        
-        def driverName = getDriverName(deviceDetails.type)
-        if (!driverName) continue
-        
-        def childDevice = getChildDevice("thinqconnect:${deviceDetails.id}")
-        if (childDevice == null) {
-            childDevice = addChildDevice("jonozzz", driverName, "thinqconnect:${deviceDetails.id}", 1234, 
-                ["name": deviceDetails.name, isComponent: false])
-            
-            // Set the first device as master for MQTT
-            if (!findMasterDevice()) {
-                childDevice.updateDataValue("master", "true")
-            } else {
-                childDevice.updateDataValue("master", "false")
-            }
-        }
-        
-        // Initialize device with current status
-        getDeviceStatus(deviceDetails, childDevice)
-    }
-    
-    // Register for push notifications
-    registerPushNotifications()
-    ensureMqttHolder()
 
     // Daily, at a minute picked once per install so hubs don't all call LG at the same time:
     // re-read every appliance (a backstop for missed pushes) and renew the event subscriptions,
-    // as LG's Home Assistant integration does (MQTT_SUBSCRIPTION_INTERVAL = 1 day).
+    // as LG's Home Assistant integration does (MQTT_SUBSCRIPTION_INTERVAL = 1 day). Scheduled
+    // first, so a failure below can't leave the app without it (updated() unscheduled everything).
     if (state.maintMinute == null) state.maintMinute = new Random().nextInt(60)
     schedule("${new Random().nextInt(60)} ${state.maintMinute} 3 * * ?", "dailyMaintenance")
+    state.remove("offlineDevices")   // replaced by one offline_<id> key per appliance
+
+    try {
+        cleanupChildDevices()
+    } catch (Exception e) {
+        logger("error", "Cleaning up devices failed: ${e}")
+    }
+
+    // One appliance failing (a driver not installed, a bad status) must not stop the others
+    for (deviceId in selectedDevices) {
+        try {
+            def deviceDetails = state.foundDevices.find { it.id == deviceId }
+            if (!deviceDetails) continue
+
+            def driverName = getDriverName(deviceDetails.type)
+            if (!driverName) continue
+
+            def childDevice = getChildDevice("thinqconnect:${deviceDetails.id}")
+            if (childDevice == null) {
+                childDevice = addChildDevice("jonozzz", driverName, "thinqconnect:${deviceDetails.id}", 1234,
+                    ["name": deviceDetails.name, isComponent: false])
+
+                // Set the first device as master for MQTT
+                if (!findMasterDevice()) {
+                    childDevice.updateDataValue("master", "true")
+                } else {
+                    childDevice.updateDataValue("master", "false")
+                }
+            }
+
+            // Initialize device with current status
+            getDeviceStatus(deviceDetails, childDevice)
+        } catch (Exception e) {
+            logger("error", "Setting up appliance ${deviceId} failed: ${e}")
+        }
+    }
+
+    try {
+        registerPushNotifications()
+    } catch (Exception e) {
+        logger("error", "Subscribing to events failed: ${e}")
+    }
+    try {
+        ensureMqttHolder()
+    } catch (Exception e) {
+        logger("error", "Choosing the MQTT holder failed: ${e}")
+    }
 }
 
 void dailyMaintenance() {
     logger("debug", "dailyMaintenance()")
-    refreshDevices()
-    registerPushNotifications()
-    ensureMqttHolder()
+    captureSecrets()
+    for (Closure step in [{ refreshDevices() }, { registerPushNotifications() }, { ensureMqttHolder() }]) {
+        try {
+            step()
+        } catch (Exception e) {
+            logger("error", "Daily maintenance step failed: ${e}")
+        }
+    }
 }
 
 // Exactly one child holds the MQTT connection. If that child was deleted, hand the job to
@@ -482,7 +535,7 @@ def setupMqttClient() {
         // Ensure csrData has proper PEM headers
         def csr = effectiveCsr()
         def formattedCsrData = csr
-        if (csr && !csr.contains("-----BEGIN CERTIFICATE REQUEST-----")) {
+        if (csr && !csr.contains("-----BEGIN")) {   // e.g. BEGIN NEW CERTIFICATE REQUEST keeps its own header
             // Remove any existing whitespace/newlines
             def csrContent = csr.trim()
             // Add PEM headers
@@ -541,27 +594,24 @@ def getDeviceStatus(deviceDetails, childDevice) {
 
 // Every status read goes through here (the drivers' refresh too). An appliance LG reports as
 // not connected (1222) is remembered; when it answers again its event subscription is renewed,
-// since one requested while it was offline may not have taken (seen 2026-11-02).
+// since one requested while it was offline may not have taken (seen 2026-11-02). One state key
+// per appliance, so two refreshes at once don't overwrite each other's flag.
 def getDeviceState(deviceId) {
-    def status = apiGet("/devices/${deviceId}/state")
-    Map offline = (state.offlineDevices ?: [:]) as Map
     String id = deviceId.toString()
-    if (status == null && state.lastApiError?.code == "1222") {
-        if (!offline[id]) {
-            offline[id] = now()
-            state.offlineDevices = offline
-        }
-    } else if (status != null && offline[id]) {
-        offline.remove(id)
-        state.offlineDevices = offline
+    Map r = apiRequest("GET", "/devices/${id}/state")
+    String flag = "offline_${id}"
+    if (!r.ok && r.error?.code == "1222") {
+        if (!state[flag]) state[flag] = now()
+    } else if (r.ok && state[flag]) {
+        state.remove(flag)
         logger("info", "Appliance ${id} is back online; renewing its event subscription")
         subscribeEvents(id)
     }
-    return status
+    return r.data
 }
 
 void subscribeEvents(String deviceId) {
-    apiPost("/event/${deviceId}/subscribe", [expire: [unit: "HOUR", timer: 4464]])
+    apiRequest("POST", "/event/${deviceId}/subscribe", [expire: [unit: "HOUR", timer: 4464]])
 }
 
 def getEnergyProfile(deviceId) {
@@ -592,75 +642,58 @@ def refreshDevices() {
     logger("debug", "refreshDevices()")
     
     for (deviceId in selectedDevices) {
-        def deviceDetails = state.foundDevices.find { it.id == deviceId }
-        def childDevice = getChildDevice("thinqconnect:${deviceId}")
-        if (deviceDetails && childDevice) {
-            getDeviceStatus(deviceDetails, childDevice)
+        try {
+            def deviceDetails = state.foundDevices.find { it.id == deviceId }
+            def childDevice = getChildDevice("thinqconnect:${deviceId}")
+            if (deviceDetails && childDevice) {
+                getDeviceStatus(deviceDetails, childDevice)
+            }
+        } catch (Exception e) {
+            logger("error", "Refreshing appliance ${deviceId} failed: ${e}")
         }
     }
+}
+
+// One request, returning its own outcome ([ok, data, error]) so concurrent callers (each child's
+// refresh goes through here) can't read each other's error; state.lastApiError only feeds the
+// setup pages. Locals, not the script binding, hold the result.
+Map apiRequest(String method, String endpoint, Map body = null, Map extraHeaders = null) {
+    logger("debug", "api${method}(${endpoint}${body != null ? ', ' + body : ''})")
+    Map headers = getApiHeaders() + (extraHeaders ?: [:])
+    Map params = [uri: "${state.apiBase}${endpoint}".toString(), headers: headers, requestContentType: "application/json", timeout: 30]
+    if (body != null) params.body = body
+    Map out = [ok: false, data: null, error: null]
+    try {
+        Closure handle = { resp ->
+            if (resp.status == 200) {
+                out.ok = true
+                out.data = resp.data?.response
+            } else {
+                out.error = [status: resp.status, text: "HTTP ${resp.status}"]
+            }
+        }
+        if (method == "GET") httpGet(params, handle)
+        else if (method == "POST") httpPost(params, handle)
+        else if (method == "DELETE") httpDelete(params, handle)
+        logger("debug", "api${method}(${endpoint}) -> ${out.ok ? out.data : describeApiError(out.error)}")
+    } catch (Exception e) {
+        out.error = recordApiError("${method} ${endpoint}", e)
+    }
+    if (out.ok) state.remove("lastApiError")
+    return out
 }
 
 def apiGet(endpoint) {
-    logger("debug", "apiGet(${endpoint})")
-    
-    def headers = getApiHeaders()
-    def uri = "${state.apiBase}${endpoint}"
-    
-    try {
-        httpGet([
-            uri: uri,
-            headers: headers,
-            requestContentType: "application/json",
-            timeout: 30
-        ]) { resp ->
-            if (resp.status == 200) {
-                result = resp.data?.response
-            } else {
-                logger("error", "API GET failed: ${resp.status} - ${resp.data}")
-                result = null
-            }
-        }
-        logger("debug", "apiGet(${endpoint}, ${result})")
-        state.remove("lastApiError")
-        return result
-    } catch (Exception e) {
-        recordApiError("GET ${endpoint}", e)
-        return null
-    }
+    return apiRequest("GET", endpoint.toString()).data
 }
 
 def apiPost(endpoint, body) {
-    logger("debug", "apiPost(${endpoint}, ${body})")
-    
-    def headers = getApiHeaders()
-    def uri = "${state.apiBase}${endpoint}"
-    
-    try {
-        httpPost([
-            uri: uri,
-            headers: headers,
-            requestContentType: "application/json",
-            body: body,
-            timeout: 30
-        ]) { resp ->
-            if (resp.status == 200) {
-                logger("debug", "API POST success: ${resp.status} - ${resp.data}")
-                result = resp.data?.response
-            } else {
-                logger("error", "API POST failed: ${resp.status} - ${resp.data}")
-                result = null
-            }
-        }
-        return result
-    } catch (Exception e) {
-        recordApiError("POST ${endpoint}", e)
-        return null
-    }
+    return apiRequest("POST", endpoint.toString(), body as Map).data
 }
 
 // LG puts its reason in the body ({"error": {"code": "1222", "message": "..."}}) whatever the
 // HTTP status, so keep it: the status alone (416, 400) doesn't say what went wrong.
-void recordApiError(String what, Exception e) {
+Map recordApiError(String what, Exception e) {
     def status = null
     def body = null
     try {
@@ -671,6 +704,7 @@ void recordApiError(String what, Exception e) {
     state.lastApiError = [status: status, code: err?.code?.toString(), message: err?.message?.toString(), text: e.message]
     // 1207 = already subscribed: the daily renewal hits it, and it means the subscription holds
     logger(state.lastApiError.code == "1207" ? "debug" : "warn", "API ${what} failed: ${describeApiError(state.lastApiError)}")
+    return state.lastApiError
 }
 
 String describeApiError(Map err) {
@@ -743,7 +777,7 @@ def retrieveMqttDetails() {
     // Ensure privateKey has proper PEM headers
     def key = effectiveKey()
     def formattedPrivateKey = key
-    if (key && !key.contains("-----BEGIN PRIVATE KEY-----")) {
+    if (key && !key.contains("-----BEGIN")) {   // PKCS#1 (BEGIN RSA PRIVATE KEY) already has its own header
         // Remove any existing whitespace/newlines
         def keyContent = key.trim()
         // Add PEM headers
@@ -775,9 +809,16 @@ def processMqttMessage(dev, payload) {
     }
 }
 
+// A command the user runs fails loudly. LG's SDK sends x-conditional-control on every control
+// call (thinq_api.async_post_device_control).
 def sendDeviceCommand(deviceId, command) {
     logger("debug", "sendDeviceCommand(${deviceId}, ${command})")
-    return apiPost("/devices/${deviceId}/control", command)
+    Map r = apiRequest("POST", "/devices/${deviceId}/control", command as Map, ["x-conditional-control": "true"])
+    if (!r.ok) {
+        def child = getChildDevice("thinqconnect:${deviceId}")
+        logger("error", "Command ${command} to ${child?.displayName ?: deviceId} failed: ${describeApiError(r.error)}")
+    }
+    return r.data
 }
 
 // ---- Secrets ----------------------------------------------------------------------------
@@ -808,6 +849,9 @@ void storeSecret(String name, String stateKey, String plain) {
 }
 
 String secretValue(String name, String stateKey) {
+    // An install upgraded by a code push alone still has its secrets in plain settings or state:
+    // move them before the first read instead of waiting for a page or a save.
+    if (!state[stateKey] && (settings.patToken || settings.privateKey || state.generatedKey)) captureSecrets()
     String enc = state[stateKey] as String
     String key = "${app.id}:${name}".toString()
     if (!enc) { SECRET_CACHE.remove(key); return null }
