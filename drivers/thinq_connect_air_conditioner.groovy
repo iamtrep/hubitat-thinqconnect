@@ -229,7 +229,6 @@ def processStateData(data) {
         if (logDescText && currentState) {
             log.info "${device.displayName} CurrentState: ${currentState}, Switch: ${switchState}"
         }
-    }
 
     // 4. Switch state
     // airConOperationMode is authoritative; airClean runs independently even when AC is OFF
