@@ -15,6 +15,8 @@ import java.math.RoundingMode
 // Bump with any change that needs initialize() to run again (new schedules, MQTT handling):
 // a code push alone doesn't run updated(), so checkVersion() does it.
 @Field static final String CODE_VERSION = "1.2.5"
+// LG ThinQ Connect error codes meaning the appliance or model lacks a feature (LG SDK ThinQAPIErrorCodes)
+@Field static final List<String> NOT_SUPPORTED_CODES = ["1219", "1220", "1221", "2101", "2201", "2202"]
 
 metadata {
     definition(name: "ThinQ Connect Dryer", namespace: "jonozzz", author: "Ionut Turturica",
@@ -357,7 +359,7 @@ int storedTimer(String key) {
 private void scheduleEnergyRefresh() {
     unschedule("refreshEnergy")
     Integer minutes = (energyRefreshMinutes ?: "180") as Integer
-    if (minutes <= 0) return
+    if (minutes <= 0 || state.energyNotSupported) return   // a manual refreshEnergy still asks LG
     if (state.energyMinute == null) state.energyMinute = new Random().nextInt(60)
     int hours = Math.max(minutes.intdiv(60), 1)
     schedule("${new Random().nextInt(60)} ${state.energyMinute} */${hours} ? * *", "refreshEnergy")
@@ -368,13 +370,22 @@ def refreshEnergy() {
     logger("debug", "refreshEnergy()")
     def deviceId = getDeviceId()
     if (!state.energyProperty) {
-        def profile = parent.getEnergyProfile(deviceId)
-        if (profile == null) {
-            // The call failed (the app logs LG's reason, e.g. 1309 when the token may not read
-            // energy): keep the schedule, it may work once the token allows it.
-            logger("warn", "Couldn't read the energy profile from LG; see the ThinQ app's log for the reason")
+        Map r = parent.getEnergyProfileResult(deviceId)
+        if (!r?.ok) {
+            String code = r?.error?.code
+            // LG's "not supported" codes are permanent for this appliance: stop asking. Anything
+            // else (1309 when the token lacks the energy scope, an outage) may clear: keep trying.
+            if (code in NOT_SUPPORTED_CODES) {
+                logger("info", "LG doesn't provide energy usage for this appliance (LG error ${code}); energy refresh is off")
+                state.energyNotSupported = true
+                unschedule("refreshEnergy")
+            } else {
+                logger("warn", "Couldn't read the energy profile from LG (${code ? 'LG error ' + code : 'no answer'}); trying again at the next refresh")
+            }
             return
         }
+        state.remove("energyNotSupported")
+        def profile = r.data
         def properties = (profile?.result ?: profile)?.property
         if (properties) state.energyProperty = properties[0].toString()
     }

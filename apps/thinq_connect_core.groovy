@@ -649,6 +649,12 @@ void subscribeEvents(String deviceId) {
     apiRequest("POST", "/event/${deviceId}/subscribe", [expire: [unit: "HOUR", timer: 4464]])
 }
 
+// The profile call with its outcome, so a driver can tell "not supported" (stop asking) from a
+// refused or failed call (try again later).
+Map getEnergyProfileResult(deviceId) {
+    return apiRequest("GET", "/devices/energy/${deviceId}/profile")
+}
+
 def getEnergyProfile(deviceId) {
     logger("debug", "getEnergyProfile(${deviceId})")
     return apiGet("/devices/energy/${deviceId}/profile")
