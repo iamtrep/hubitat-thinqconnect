@@ -451,8 +451,8 @@ def initialize() {
     }
 }
 
-// A code push doesn't run updated(). The first MQTT message or daily maintenance after one
-// does, as a Done would.
+// A code push doesn't run updated(). The first MQTT message, daily maintenance or button
+// press after one does, as a Done would.
 void checkVersion(boolean reinit = true) {
     if (state.version == CODE_VERSION) return
     logger("info", "Code version ${CODE_VERSION} (was ${state.version ?: 'none'})" + (reinit ? "; re-initializing" : ""))
@@ -791,6 +791,7 @@ void deleteOrphanedDevices() {
 }
 
 void appButtonHandler(String btn) {
+    checkVersion()
     if (btn == "deleteOrphans") deleteOrphanedDevices()
 }
 
