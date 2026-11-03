@@ -366,7 +366,9 @@ def updated() {
 
 def uninstalled() {
     logger("debug", "uninstalled()")
-    // Leave nothing subscribed on LG's side (Home Assistant unsubscribes the same way)
+    // Leave nothing subscribed on LG's side (Home Assistant unsubscribes the same way).
+    // The client registration stays: LG's SDK deletes it with DELETE /client and the registration
+    // body, and Hubitat's httpDelete/asynchttpDelete send no body.
     for (deviceId in (selectedDevices ?: [])) {
         try {
             apiRequest("DELETE", "/event/${deviceId}/unsubscribe")
