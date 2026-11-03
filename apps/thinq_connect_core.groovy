@@ -106,6 +106,8 @@ preferences {
 ]
 
 @Field static def caCertUrl = "https://www.amazontrust.com/repository/AmazonRootCA1.pem"
+// Drivers that turn LG's push notifications into a "notification" event
+@Field static final List<String> NOTIFYING_DRIVERS = ["ThinQ Connect Washer", "ThinQ Connect Dryer"]
 @Field static final String PAT_URL = "https://connect-pat.lgthinq.com"
 // Decrypted secrets, in memory only: decrypt() costs 350-830 ms. Key "<app id>:<name>",
 // value [ciphertext, plaintext] so a replaced secret misses.
@@ -380,6 +382,7 @@ def uninstalled() {
     for (deviceId in (selectedDevices ?: [])) {
         try {
             apiRequest("DELETE", "/event/${deviceId}/unsubscribe")
+            apiRequest("DELETE", "/push/${deviceId}/unsubscribe")
         } catch (Exception e) {
             logger("warn", "Could not unsubscribe ${deviceId}: ${e}")
         }
@@ -434,6 +437,13 @@ def initialize() {
 
             // Initialize device with current status
             getDeviceStatus(deviceDetails, childDevice)
+
+            // The notifications this appliance can send, from its profile, so rules can be
+            // written against the real codes (shown on the device page)
+            if (NOTIFYING_DRIVERS.contains(childDevice.typeName)) {
+                def codes = getDeviceProfile(deviceDetails.id)?.notification?.push
+                if (codes) childDevice.updateDataValue("notificationCodes", codes.collect { it.toString().toLowerCase() }.join(", "))
+            }
         } catch (Exception e) {
             logger("error", "Setting up appliance ${deviceId} failed: ${e}")
         }
@@ -645,6 +655,12 @@ def getDeviceState(deviceId) {
     return r.data
 }
 
+// LG's notifications come on a separate subscription, as in Home Assistant (async_post_push_subscribe).
+// 1207 (already subscribed) on renewal is expected and logged at debug.
+void subscribePush(String deviceId) {
+    apiRequest("POST", "/push/${deviceId}/subscribe", [:])
+}
+
 void subscribeEvents(String deviceId) {
     apiRequest("POST", "/event/${deviceId}/subscribe", [expire: [unit: "HOUR", timer: 4464]])
 }
@@ -671,8 +687,8 @@ def registerPushNotifications() {
     
     for (deviceId in selectedDevices) {
         try {
-            //apiPost("/push/${deviceId}/subscribe", [:])
             subscribeEvents(deviceId.toString())
+            subscribePush(deviceId.toString())
         } catch (Exception e) {
             logger("warn", "Failed to register notifications for device ${deviceId}: ${e}")
         }
@@ -844,6 +860,15 @@ def processMqttMessage(dev, payload) {
             def targetDevice = getChildDevice("thinqconnect:" + payload.deviceId)
             if (targetDevice) {
                 targetDevice.processStateData(payload.report)
+            }
+            break
+        case "DEVICE_PUSH":
+            // LG's own notifications (WASHING_IS_COMPLETE, ERROR_DURING_WASHING, ...), from /push
+            def notifyDevice = getChildDevice("thinqconnect:" + payload.deviceId)
+            if (notifyDevice && payload.pushCode && NOTIFYING_DRIVERS.contains(notifyDevice.typeName)) {
+                notifyDevice.processNotification(payload.pushCode.toString())
+            } else {
+                logger("debug", "Notification ${payload.pushCode} for ${payload.deviceId} not handled")
             }
             break
         default:
