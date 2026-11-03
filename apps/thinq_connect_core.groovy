@@ -48,7 +48,10 @@ preferences {
     "DEVICE_WASHTOWER_WASHER",
     "DEVICE_WASHTOWER_DRYER",
     "DEVICE_MICROWAVE_OVEN",
-    "DEVICE_AIR_CONDITIONER"
+    "DEVICE_AIR_CONDITIONER",
+    "DEVICE_AIR_PURIFIER",
+    "DEVICE_STYLER",
+    "DEVICE_DEHUMIDIFIER"
 ]
 
 @Field static def countryNameMap = [
@@ -340,6 +343,12 @@ def getDriverName(deviceType) {
             return "ThinQ Connect Microwave Oven"
         case "DEVICE_AIR_CONDITIONER":
             return "ThinQ Connect Air Conditioner"
+        case "DEVICE_AIR_PURIFIER": 
+            return "ThinQ Connect Air Purifier"
+        case "DEVICE_STYLER": 
+            return "ThinQ Connect Styler"
+        case "DEVICE_DEHUMIDIFIER":
+            return "ThinQ Connect Dehumidifier"
         default:
             return null
     }
