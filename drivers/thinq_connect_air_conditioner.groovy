@@ -219,11 +219,16 @@ def processStateData(data) {
     def airConOpModeRaw    = data.operation?.airConOperationMode    ?: null
     def airCleanOpModeRaw  = data.operation?.airCleanOperationMode  ?: null
 
-    if (airConOpModeRaw != null) {
-        sendEvent(name: "airConOperationMode", value: cleanEnumValue(airConOpModeRaw))
-    }
-    if (airCleanOpModeRaw != null) {
-        sendEvent(name: "airCleanOperationMode", value: cleanEnumValue(airCleanOpModeRaw))
+    // Derive switch state from runState or operation mode
+    def isPoweredOff = false
+    if (currentState || airConOpModeRaw) {
+        def modeText = currentState ?: airConOpModeRaw ?: ""
+        isPoweredOff = (modeText =~ /(?i)power_off|off/).asBoolean()
+        def switchState = isPoweredOff ? 'off' : 'on'
+        sendEvent(name: "switch", value: switchState)
+        if (logDescText && currentState) {
+            log.info "${device.displayName} CurrentState: ${currentState}, Switch: ${switchState}"
+        }
     }
 
     // 4. Switch state
@@ -463,7 +468,8 @@ def setCoolTargetTemperature(temperature) {
 
 def setCoolingSetpoint(temperature) {
     logger("debug", "setCoolingSetpoint(${temperature})")
-    setTargetTemperature(temperature)
+    // Thermostat cooling setpoint maps to single-set target temperature
+    setCoolTargetTemperature(temperature)
 }
 
 def setHeatingSetpoint(temperature) {
