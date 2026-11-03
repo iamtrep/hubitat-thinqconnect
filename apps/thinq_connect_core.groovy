@@ -393,8 +393,18 @@ def initialize() {
     schedule("${new Random().nextInt(60)} ${state.maintMinute} 3 * * ?", "dailyMaintenance")
 }
 
+// A code push doesn't run updated(). The first MQTT message or daily maintenance after one
+// does, as a Done would.
+void checkVersion(boolean reinit = true) {
+    if (state.version == CODE_VERSION) return
+    logger("info", "Code version ${CODE_VERSION} (was ${state.version ?: 'none'})" + (reinit ? "; re-initializing" : ""))
+    state.version = CODE_VERSION
+    if (reinit) runIn(1, "updated")
+}
+
 void dailyMaintenance() {
     logger("debug", "dailyMaintenance()")
+    checkVersion()
     refreshDevices()
     registerPushNotifications()
     ensureMqttHolder()
@@ -409,14 +419,6 @@ void ensureMqttHolder() {
     logger("info", "${holder.displayName} now holds the MQTT connection")
     holder.updateDataValue("master", "true")
     holder.initialize()
-}
-
-// A code push doesn't run updated(). The first MQTT message after one does, as a Done would.
-void checkVersion(boolean reinit = true) {
-    if (state.version == CODE_VERSION) return
-    logger("info", "Code version ${CODE_VERSION} (was ${state.version ?: 'none'})" + (reinit ? "; re-initializing" : ""))
-    state.version = CODE_VERSION
-    if (reinit) runIn(1, "updated")
 }
 
 def getDriverName(deviceType) {
