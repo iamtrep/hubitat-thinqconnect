@@ -119,7 +119,8 @@ preferences {
     "1306": "Too many API calls. LG blocks the token for a while; try again later.",
     "1307": "This country isn't supported for the token. Pick the country of your LG account.",
     "1308": "The token lacks control permission for this action.",
-    "1309": "Too many API calls. Try again later."
+    "1305": "LG doesn't allow this call for the token: check its scopes on LG's token page.",
+    "1309": "LG doesn't allow this call for the token: check its scopes on LG's token page."
 ]
 
 def prefMain() {
