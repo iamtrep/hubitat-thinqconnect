@@ -63,6 +63,9 @@ metadata {
         section {
             input name: "logLevel", title: "Log Level", type: "enum", options: LOG_LEVELS, defaultValue: DEFAULT_LOG_LEVEL, required: false
             input name: "logDescText", title: "Log Description Text", type: "bool", defaultValue: false, required: false
+            input name: "switchControlsDishwasher", title: "Switch on/off starts and stops the dishwasher",
+                  description: "Off: the switch only reports whether a cycle is running, so an 'all off' rule or a voice assistant can't stop a cycle. The Start and Stop commands work either way.",
+                  type: "bool", defaultValue: false, required: false
         }
     }
 }
@@ -114,6 +117,9 @@ def mqttConnectUntilSuccessful() {
     logger("debug", "mqttConnectUntilSuccessful()")
 
     try {
+        // A retry can find a half-open connection (e.g. connect worked, subscribe failed)
+        if (interfaces.mqtt.isConnected()) interfaces.mqtt.disconnect()
+
         def mqtt = parent.retrieveMqttDetails()
 
         interfaces.mqtt.connect(mqtt.server,
@@ -124,8 +130,7 @@ def mqttConnectUntilSuccessful() {
                                 privateKey: mqtt.privateKey,
                                 caCertificate: mqtt.caCertificate,
                                 clientCertificate: mqtt.certificate,
-                                cleanSession: true,
-                                ignoreSSLIssues: true)
+                                cleanSession: true)
         pauseExecution(3000)
         for (sub in mqtt.subscriptions) {
             interfaces.mqtt.subscribe(sub)
@@ -133,10 +138,19 @@ def mqttConnectUntilSuccessful() {
         return true
     }
     catch (e) {
-        logger("warn", "Lost connection to MQTT, retrying in 15 seconds ${e}")
-        runIn(15, "mqttConnectUntilSuccessful")
+        scheduleMqttRetry("connect failed: ${e}")
         return false
     }
+}
+
+// Retry 15 s after a failure, doubling up to 10 min; a successful connection resets it.
+// A broker that accepts and then drops the connection would otherwise loop every few seconds.
+void scheduleMqttRetry(String why) {
+    int n = (state.mqttRetries ?: 0) as int
+    int delay = Math.min(15 * (1 << Math.min(n, 6)), 600)
+    state.mqttRetries = n + 1
+    logger("warn", "MQTT ${why}; retrying in ${delay} s")
+    runIn(delay, "mqttConnectUntilSuccessful")
 }
 
 def parse(message) {
@@ -153,45 +167,42 @@ def mqttClientStatus(String message) {
 
     if (message.startsWith("Error:")) {
         logger("error", "MQTT Error: ${message}")
-
         try {
             interfaces.mqtt.disconnect()
         }
         catch (e) {
         }
-        mqttConnectUntilSuccessful()
+        scheduleMqttRetry("error")
+    } else if (message.contains("Connection succeeded")) {
+        state.mqttRetries = 0
+        unschedule("mqttConnectUntilSuccessful")   // a retry still pending would drop this connection
     }
 }
 
 def processStateData(data) {
     logger("debug", "processStateData(${data})")
     checkVersion()
-
+    // REST answers a list for some appliances and a map for others; a failed REST call hands us null.
+    if (data instanceof List) data = data ? data[0] : null
     if (!data) return
 
     // Process current state
     if (data.runState?.currentState) {
-        // def currentState = cleanEnumValue(data.runState.currentState)
         def currentState = data.runState.currentState
         def previousState = device.currentValue("currentState")
         sendEvent(name: "currentState", value: currentState)
-        
-        def switchState = (currentState =~ /(?i)power_off|standby/ ? 'off' : 'on')
+
+        // switch = a cycle is under way, not merely powered on
+        def switchState = isRunningState(currentState) ? 'on' : 'off'
         sendEvent(name: "switch", value: switchState)
-        
+
         if (logDescText) {
             log.info "${device.displayName} CurrentState: ${currentState}, Switch: ${switchState}"
         }
 
-        // When a program starts running, MQTT only sends a partial timer update (e.g. remainMinute
-        // only, no remainHour), causing incorrect remainingTime calculation. Schedule a REST refresh
-        // to pull the full timer data shortly after the state transition into a running state.
-        def isNowRunning = !(currentState =~ /(?i)power_off|standby|end|error|pause/)
-        def wasRunning = previousState ? !(previousState =~ /(?i)power_off|standby|end|error|pause/) : false
-        if (isNowRunning && !wasRunning) {
-            logger("info", "Program started, scheduling refresh to get complete timer data")
-            runIn(5, "refresh")
-        }
+        // Pushes carry no timestamp and can arrive out of order, and the one at a state change
+        // often has a partial timer. Pull the full state shortly after each change.
+        if (currentState != previousState) runIn(5, "refresh")
     }
 
     // Process operation mode
@@ -253,42 +264,27 @@ def processStateData(data) {
         sendEvent(name: "cleanLightReminder", value: lightReminder)
     }
 
-    if (data.timer?.remainHour != null) {
-      updateDataValue("remainHour", data.timer?.remainHour.toString())
+    // Process timer information. A message carries only the timer fields that changed (often
+    // none), so keep the last value of each field and recompute only when the timer is present:
+    // a missing field is "unchanged", not 0, and 0 is a real value.
+    if (data.timer) {
+        ["remainHour", "remainMinute", "totalHour", "totalMinute"].each { k ->
+            if (data.timer[k] != null) updateDataValue(k, data.timer[k].toString())
+        }
+        int remainingTime = storedTimer("remainHour") * 3600 + storedTimer("remainMinute") * 60
+        int totalTime = storedTimer("totalHour") * 3600 + storedTimer("totalMinute") * 60
+        int runTime = Math.max(totalTime - remainingTime, 0)
+
+        sendEvent(name: "remainingTime", value: remainingTime, unit: "seconds")
+        sendEvent(name: "remainingTimeDisplay", value: convertSecondsToTime(remainingTime))
+        sendEvent(name: "totalTime", value: totalTime, unit: "seconds")
+        sendEvent(name: "totalTimeDisplay", value: convertSecondsToTime(totalTime))
+        sendEvent(name: "runTime", value: runTime, unit: "seconds")
+        sendEvent(name: "runTimeDisplay", value: convertSecondsToTime(runTime))
+
+        Date finishTime = new Date(now() + remainingTime * 1000L)
+        sendEvent(name: "finishTimeDisplay", value: finishTime.format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone))
     }
-
-    if (data.timer?.totalHour != null) {
-      updateDataValue("totalHour", data.timer?.totalHour.toString())
-    }
-
-    if (data.timer?.totalMinute != null) {
-      updateDataValue("totalMinute", data.timer?.totalMinute.toString())
-    }
-
-    // Process timer information
-    def remainHour = data.timer?.remainHour ?: getDataValue("remainHour").toInteger() ?: 0
-    def remainMinute = data.timer?.remainMinute ?: 0
-    def totalHour = data.timer?.totalHour ?: getDataValue("totalHour").toInteger() ?: 0
-    def totalMinute = data.timer?.totalMinute ?: getDataValue("totalMinute").toInteger() ?: 0
-
-    def remainingTime = (remainHour * 3600) + (remainMinute * 60)
-    def totalTime = (totalHour * 3600) + (totalMinute * 60)
-    def runTime = totalTime - remainingTime
-
-    sendEvent(name: "remainingTime", value: remainingTime, unit: "seconds")
-    sendEvent(name: "remainingTimeDisplay", value: convertSecondsToTime(remainingTime))
-    sendEvent(name: "totalTime", value: totalTime, unit: "seconds")
-    sendEvent(name: "totalTimeDisplay", value: convertSecondsToTime(totalTime))
-    sendEvent(name: "runTime", value: runTime, unit: "seconds")
-    sendEvent(name: "runTimeDisplay", value: convertSecondsToTime(runTime))
-
-    // Calculate finish time
-    Date currentTime = new Date()
-    use(groovy.time.TimeCategory) {
-        currentTime = currentTime + (remainingTime as int).seconds
-    }
-    def finishTimeDisplay = currentTime.format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone)
-    sendEvent(name: "finishTimeDisplay", value: finishTimeDisplay)
 
     // Process delay timer
     if (data.timer?.relativeHourToStart != null) {
@@ -345,10 +341,18 @@ def powerOff() {
 }
 
 def on() {
+    if (!switchControlsDishwasher) {
+        logger("warn", "on() ignored: 'Switch on/off starts and stops the dishwasher' is off; use the Start command")
+        return
+    }
     start()
 }
 
 def off() {
+    if (!switchControlsDishwasher) {
+        logger("warn", "off() ignored: 'Switch on/off starts and stops the dishwasher' is off; use the Stop command")
+        return
+    }
     stop()
 }
 
@@ -372,17 +376,23 @@ def getDeviceDetails() {
     return parent.state.foundDevices.find { it.id == deviceId }
 }
 
+// Powered on but idle, paused, finished or in error: not running.
+boolean isRunningState(state) {
+    return state != null && !(state.toString() ==~ /(?i)(power_off|standby|end|error|pause|initial|reserved)/)
+}
+
+int storedTimer(String key) {
+    def v = getDataValue(key)
+    return v?.isInteger() ? v.toInteger() : 0
+}
+
 def cleanEnumValue(value) {
     if (value == null) return ""
-    
-    // Convert enum values to readable format
     return value.toString()
-        .replaceAll(/^[A-Z_]+_/, "")  // Remove prefix
-        .replaceAll(/_/, " ")         // Replace underscores with spaces
-        .toLowerCase()                // Convert to lowercase
-        .split(' ')                   // Split into words
-        .collect { it.capitalize() }  // Capitalize each word
-        .join(' ')                    // Join back together
+        .toLowerCase()
+        .split('_')
+        .collect { it.capitalize() }
+        .join(' ')
 }
 
 def convertSecondsToTime(int sec) {
