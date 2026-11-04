@@ -275,7 +275,7 @@ private def processWasherState(data) {
         sendEvent(name: "washerRunTime", value: runTime, unit: "seconds")
         sendEvent(name: "washerRunTimeDisplay", value: convertSecondsToTime(runTime))
 
-        updateFinishTime("washerFinishTimeDisplay", remainingTime)
+        updateFinishTime("washerFinishTimeDisplay", remainingTime, data.runState?.currentState ?: device.currentValue("washerCurrentState"))
     }
 
     if (data.timer?.relativeHourToStart != null) {
@@ -342,7 +342,7 @@ private def processDryerState(data) {
         sendEvent(name: "dryerRunTime", value: runTime, unit: "seconds")
         sendEvent(name: "dryerRunTimeDisplay", value: convertSecondsToTime(runTime))
 
-        updateFinishTime("dryerFinishTimeDisplay", remainingTime)
+        updateFinishTime("dryerFinishTimeDisplay", remainingTime, data.runState?.currentState ?: device.currentValue("dryerCurrentState"))
     }
 
     if (data.timer?.relativeHourToStart != null) {
@@ -491,10 +491,10 @@ private logger(level, msg) {
 }
 
 // finishTime = now + remaining, so every message moves it by a few seconds and each refresh of an
-// idle appliance (remaining 0) logged a new "now". Send it only while time remains, and only when
-// it moves by more than 90 s; at 0 it keeps the time the last cycle was due to end.
-private void updateFinishTime(String attr, int remainingTime) {
-    if (remainingTime <= 0) return
+// idle appliance logged a new "now". Send it only while a cycle runs (an idle appliance can keep a
+// stale remaining minute), and only when it moves by more than 90 s; it keeps the last cycle's time.
+private void updateFinishTime(String attr, int remainingTime, runState) {
+    if (remainingTime <= 0 || !isRunningState(runState)) return
     long finish = now() + remainingTime * 1000L
     String current = device.currentValue(attr)
     if (current) {
@@ -503,4 +503,9 @@ private void updateFinishTime(String attr, int remainingTime) {
         } catch (Exception ignored) { }   // an unparseable old value is replaced
     }
     sendEvent(name: attr, value: new Date(finish).format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone))
+}
+
+// Powered on but idle, paused, finished, waiting for a delayed start or in error: not running.
+boolean isRunningState(state) {
+    return state != null && !(state.toString() ==~ /(?i)(power_off|initial|pause|end|error|reserved|sleep)/)
 }
